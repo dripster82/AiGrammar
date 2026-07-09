@@ -8,6 +8,7 @@ struct ControlPanelView: View {
     @ObservedObject var prompts: PromptStore
     @ObservedObject var params: InferenceParams
     @ObservedObject var router: PanelRouter
+    @ObservedObject var chat: ChatController
     private var route: PanelRoute { router.route }
 
     var body: some View {
@@ -21,8 +22,12 @@ struct ControlPanelView: View {
                 }
                 .padding(.horizontal, 20).padding(.vertical, 14)
                 Divider().overlay(PanelTheme.border)
-                ScrollView {
-                    detail.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                if route == .chat {
+                    detail.frame(maxWidth: .infinity, maxHeight: .infinity)   // manages its own scroll
+                } else {
+                    ScrollView {
+                        detail.padding(20).frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 Divider().overlay(PanelTheme.border)
                 buildFooter
@@ -39,6 +44,7 @@ struct ControlPanelView: View {
         switch route {
         case .dashboard: DashboardPage(settings: settings, monitor: monitor, models: models)
         case .aiModels: AIModelsPage(models: models, settings: settings)
+        case .chat: ChatPage(chat: chat, models: models)
         case .settings: SettingsPage(settings: settings, prompts: prompts, params: params)
         case .diagnostics: DiagnosticsPage(monitor: monitor, models: models)
         }
@@ -539,6 +545,121 @@ private struct SettingsPage: View {
                 .padding(6)
                 .background(.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(PanelTheme.border))
+        }
+    }
+}
+
+// MARK: - Diagnostics
+
+// MARK: - Chat
+
+private struct ChatPage: View {
+    @ObservedObject var chat: ChatController
+    @ObservedObject var models: ModelManager
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider().overlay(PanelTheme.border)
+            transcript
+            Divider().overlay(PanelTheme.border)
+            composer
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "cpu").foregroundStyle(.secondary)
+            if chat.engineOptions.isEmpty {
+                Text("No model available — download one in AI Models or enable Apple Intelligence.")
+                    .font(.caption).foregroundStyle(.orange)
+            } else {
+                Picker("", selection: $chat.modelId) {
+                    Text("Choose a model…").tag("")
+                    ForEach(chat.engineOptions, id: \.id) { Text($0.name).tag($0.id) }
+                }.labelsHidden().fixedSize()
+            }
+            Spacer()
+            Button {
+                chat.newChat()
+            } label: { Label("New chat", systemImage: "square.and.pencil") }
+                .controlSize(.small)
+                .disabled(chat.messages.isEmpty && !chat.streaming)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    private var transcript: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    if chat.messages.isEmpty {
+                        Text("Ask the model anything. This is a direct, local chat — nothing leaves your Mac.")
+                            .font(.callout).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .center).padding(.top, 40)
+                    }
+                    ForEach(chat.messages) { msg in
+                        ChatBubble(msg: msg, streaming: chat.streaming && msg.id == chat.messages.last?.id)
+                            .id(msg.id)
+                    }
+                }
+                .padding(16)
+            }
+            .onChange(of: chat.messages.last?.text) { _, _ in
+                if let last = chat.messages.last { withAnimation { proxy.scrollTo(last.id, anchor: .bottom) } }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var composer: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField("Message…", text: $chat.input, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...6)
+                .padding(8)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
+                .onSubmit { chat.send() }
+                .disabled(chat.modelId.isEmpty)
+            if chat.streaming {
+                Button { chat.stop() } label: {
+                    Image(systemName: "stop.circle.fill").font(.title2)
+                }.buttonStyle(.plain).help("Stop generating")
+            } else {
+                Button { chat.send() } label: {
+                    Image(systemName: "arrow.up.circle.fill").font(.title2)
+                }
+                .buttonStyle(.plain)
+                .disabled(chat.input.trimmingCharacters(in: .whitespaces).isEmpty || chat.modelId.isEmpty)
+                .help("Send")
+            }
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+}
+
+private struct ChatBubble: View {
+    let msg: ChatController.Msg
+    let streaming: Bool
+    private var isUser: Bool { msg.role == "user" }
+
+    var body: some View {
+        HStack {
+            if isUser { Spacer(minLength: 40) }
+            VStack(alignment: .leading, spacing: 2) {
+                if msg.text.isEmpty && streaming {
+                    HStack(spacing: 6) { ProgressView().controlSize(.small); Text("Thinking…").foregroundStyle(.secondary) }
+                } else {
+                    Text(msg.text).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+            .font(.callout)
+            .padding(10)
+            .background(isUser ? PanelTheme.accent.opacity(0.22) : Color.secondary.opacity(0.12),
+                        in: RoundedRectangle(cornerRadius: 10))
+            .frame(maxWidth: 460, alignment: isUser ? .trailing : .leading)
+            if !isUser { Spacer(minLength: 40) }
         }
     }
 }

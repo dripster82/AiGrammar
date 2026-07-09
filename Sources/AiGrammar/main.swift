@@ -3,13 +3,19 @@ import Carbon.HIToolbox
 import Combine
 import SwiftUI
 
-// Programmatic app entry (no @main attribute conflicts with SwiftPM main.swift).
+// Programmatic app entry (no @main attribute conflicts with SwiftPM main.swift). Top-level code is
+// nonisolated, but everything here runs on the main thread — so assume main-actor isolation to build
+// and wire the @MainActor delegate.
 let app = NSApplication.shared
-let delegate = AppDelegate()
-app.delegate = delegate
-app.setActivationPolicy(.regular)  // real app window + Dock icon (plus the menu-bar item)
+let delegate = MainActor.assumeIsolated { () -> AppDelegate in
+    let d = AppDelegate()
+    app.delegate = d
+    app.setActivationPolicy(.regular)  // real app window + Dock icon (plus the menu-bar item)
+    return d
+}
 app.run()
 
+@MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     let panelRouter = PanelRouter()
@@ -27,6 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     lazy var rewriteController = RewriteController(
         monitor: monitor, models: models, prompts: prompts, settings: settings,
         params: inferenceParams)
+    lazy var chatController = ChatController(
+        models: models, params: inferenceParams,
+        defaultModelId: RewriteEngineChoice.resolve(settings.rewriteEngineChoice, models: models).id)
     let helpOverlay = HelpOverlayController()
     var controlWindow: NSWindow!
     var hotKeys: [GlobalHotKey] = []
@@ -43,7 +52,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         signal(SIGTERM, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
         src.setEventHandler { [weak self] in
-            self?.rewriteController.shutdown(); self?.aiSpellChecker.shutdown(); NSApp.terminate(nil)
+            MainActor.assumeIsolated {   // the source fires on the main queue
+                self?.rewriteController.shutdown(); self?.aiSpellChecker.shutdown()
+                self?.chatController.shutdown(); NSApp.terminate(nil)
+            }
         }
         src.resume()
         sigterm = src
@@ -117,6 +129,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         rewriteController.shutdown()  // stop any warm llama-server
         aiSpellChecker.shutdown()     // stop the spell-check server too
+        chatController.shutdown()     // stop the chat server too
     }
 
     /// Clicking the Dock icon (or reopening) brings the control window back instead of doing nothing.
@@ -164,7 +177,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controlWindow.contentView = NSHostingView(
             rootView: ControlPanelView(
                 settings: settings, monitor: monitor, models: models,
-                prompts: prompts, params: inferenceParams, router: panelRouter))
+                prompts: prompts, params: inferenceParams, router: panelRouter, chat: chatController))
         controlWindow.center()
     }
 
