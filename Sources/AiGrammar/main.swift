@@ -206,6 +206,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.lastIssueCount = count
             self?.refreshIndicator()
         }
+        pipeline.onAIChecking = { [weak self] checking in
+            self?.refreshIndicator()               // ensure the badge is positioned
+            self?.issueIndicator.setChecking(checking)
+        }
         issueIndicator.onRecheck = { [weak self] in self?.pipeline.checkNow() }
         issueIndicator.onRewrite = { [weak self] in self?.rewriteController.rewriteSelection() }
         // Reposition/hide the floating badge as focus moves in and out of Slack's composer.

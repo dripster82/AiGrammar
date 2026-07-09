@@ -41,13 +41,19 @@ public enum AutocorrectPolicy {
     ///   - word: the misspelled token as it appears in the text.
     ///   - topGuess: the spellchecker's best guess (may be nil).
     ///   - editDistance: Levenshtein distance between word and topGuess.
-    public static func classify(word: String, topGuess: String?, editDistance: Int) -> Disposition {
+    /// - Parameter singleGuess: true when the spellchecker offered exactly ONE correction — i.e. the
+    ///   fix is unambiguous.
+    public static func classify(word: String, topGuess: String?, editDistance: Int,
+                                singleGuess: Bool = false) -> Disposition {
         if WordClassifier.shouldSkip(word) { return .ignore }
         if highConfidence[word.lowercased()] != nil { return .autocorrect }
         guard let guess = topGuess, !guess.isEmpty else { return .ignore }
-        // Everything the system spellchecker offers is suggestion-only. A wildly different guess
-        // (edit distance too large relative to the word) is dropped to avoid nonsense suggestions.
+        // A wildly different guess (edit distance too large relative to the word) is nonsense — drop it.
         if editDistance > max(2, word.count / 2) { return .ignore }
+        // A misspelling with a single, close correction (e.g. "knowlefge" → "knowledge") is
+        // unambiguous — autocorrect it (with an undo chip), like the curated list.
+        if singleGuess, editDistance <= 2, word.count >= 4 { return .autocorrect }
+        // Otherwise the system spellchecker's suggestions are advisory only (ambiguous).
         return .suggest
     }
 

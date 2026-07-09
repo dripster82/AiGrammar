@@ -54,8 +54,16 @@ private func place(_ panel: NSPanel, below wordRect: CGRect?, size: NSSize) {
 final class IssueCountIndicatorController: NSObject {
     private var panel: NSPanel?
     private var count = 0
+    private var lastComposerAX: CGRect?
+    private var checking = false
     var onRecheck: (() -> Void)?
     var onRewrite: (() -> Void)?
+
+    /// Toggle the spinner state (an on-demand AI check is running) without changing the count/position.
+    func setChecking(_ on: Bool) {
+        checking = on
+        update(count: count, composerAX: lastComposerAX)
+    }
 
     /// Show/refresh the badge at the composer's top-right. `composerAX` is the composer frame in AX
     /// (top-left origin) coordinates; pass nil to hide.
@@ -65,8 +73,9 @@ final class IssueCountIndicatorController: NSObject {
             return
         }
         self.count = count
+        self.lastComposerAX = composerAX
 
-        let view = CountBadgeView(count: count, onTap: { [weak self] in self?.popMenu() })
+        let view = CountBadgeView(count: count, checking: checking, onTap: { [weak self] in self?.popMenu() })
         let hosting = NSHostingView(rootView: view)
         hosting.layoutSubtreeIfNeeded()
         let size = NSSize(
@@ -118,6 +127,7 @@ final class IssueCountIndicatorController: NSObject {
 
 private struct CountBadgeView: View {
     let count: Int
+    var checking: Bool = false
     let onTap: () -> Void
 
     var body: some View {
@@ -125,7 +135,11 @@ private struct CountBadgeView: View {
             HStack(spacing: 4) {
                 Image(systemName: "textformat.abc")
                     .font(.system(size: 14, weight: .bold))
-                if count > 0 {
+                if checking {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+                } else if count > 0 {
                     Text("\(count)").font(.callout.weight(.bold))
                 } else {
                     Image(systemName: "checkmark").font(.system(size: 11, weight: .bold))
@@ -133,16 +147,17 @@ private struct CountBadgeView: View {
             }
             .foregroundStyle(.white)
             .padding(.horizontal, 8).padding(.vertical, 4)
-            .background(count > 0 ? Color.red : Color.green, in: Capsule())
+            .background(checking ? Color.blue : (count > 0 ? Color.red : Color.green), in: Capsule())
             .overlay(Capsule().strokeBorder(.white.opacity(0.25)))
             .contentShape(Capsule())
         }
         .buttonStyle(.plain)
         .fixedSize()
         .help(
-            count > 0
-                ? "\(count) spelling issue\(count == 1 ? "" : "s") — click for options"
-                : "No spelling issues — click for options")
+            checking ? "AI spell check running…"
+                : (count > 0
+                    ? "\(count) spelling issue\(count == 1 ? "" : "s") — click for options"
+                    : "No spelling issues — click for options"))
     }
 }
 

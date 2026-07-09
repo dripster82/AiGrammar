@@ -45,6 +45,7 @@ struct ControlPanelView: View {
         case .dashboard: DashboardPage(settings: settings, monitor: monitor, models: models)
         case .aiModels: AIModelsPage(models: models, settings: settings)
         case .chat: ChatPage(chat: chat, models: models)
+        case .aiSpell: AISpellPage(settings: settings, models: models)
         case .settings: SettingsPage(settings: settings, prompts: prompts, params: params)
         case .diagnostics: DiagnosticsPage(monitor: monitor, models: models)
         }
@@ -91,7 +92,6 @@ private struct DashboardPage: View {
                 Toggle("Autocorrect high-confidence typos", isOn: $settings.autocorrectEnabled)
                 Toggle("Show spelling suggestions", isOn: $settings.suggestionsEnabled)
             }
-            AISpellCheckCard(settings: settings, models: models)
             Card(title: "Privacy", icon: "lock.shield") {
                 Text("Everything runs on your Mac. Spelling uses the on-device dictionary; rewrites use a local model you download here. No message text is ever sent to a server.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -112,9 +112,10 @@ private struct DashboardPage: View {
     }
 }
 
-/// Model-based spell/word-choice checker settings: enable, which model, when it runs, and (for the
-/// delayed cadence) how long after you stop typing.
-private struct AISpellCheckCard: View {
+// MARK: - AI Spell Check
+
+/// Dedicated page for the model-based, context-aware spell/word-choice checker.
+private struct AISpellPage: View {
     @ObservedObject var settings: Settings
     @ObservedObject var models: ModelManager
 
@@ -129,57 +130,73 @@ private struct AISpellCheckCard: View {
     }
 
     var body: some View {
-        Card(title: "AI spell check", icon: "sparkle.magnifyingglass") {
-            Toggle("Context-aware AI spell check", isOn: $settings.aiSpellEnabled)
-            Text("Uses a model to catch real-word errors the dictionary misses (their/there, form/from). Supplements the instant dictionary check.")
-                .font(.caption).foregroundStyle(.secondary)
+        VStack(spacing: 14) {
+            Card(title: "AI spell check", icon: "text.magnifyingglass") {
+                Toggle("Enable context-aware AI spell check", isOn: $settings.aiSpellEnabled)
+                Text("Uses a model to catch real-word errors the dictionary misses (their/there, form/from). Supplements the instant dictionary check.")
+                    .font(.caption).foregroundStyle(.secondary)
 
-            if settings.aiSpellEnabled {
-                if modelOptions.isEmpty {
-                    Text("No model available. Enable Apple Intelligence or download a local model in AI Models.")
-                        .font(.caption).foregroundStyle(.orange)
-                } else {
-                    HStack {
-                        Text("Model").frame(width: 90, alignment: .leading)
-                        Picker("", selection: $settings.aiSpellModel) {
-                            Text("Choose…").tag("")
-                            ForEach(modelOptions, id: \.id) { Text($0.name).tag($0.id) }
-                        }.labelsHidden()
+                if settings.aiSpellEnabled {
+                    Divider().overlay(PanelTheme.border).padding(.vertical, 2)
+                    if modelOptions.isEmpty {
+                        Text("No model available. Enable Apple Intelligence or download a local model in AI Models.")
+                            .font(.caption).foregroundStyle(.orange)
+                    } else {
+                        row("Model") {
+                            Picker("", selection: $settings.aiSpellModel) {
+                                Text("Choose…").tag("")
+                                ForEach(modelOptions, id: \.id) { Text($0.name).tag($0.id) }
+                            }.labelsHidden()
+                        }
                     }
-                }
-                HStack {
-                    Text("Run").frame(width: 90, alignment: .leading)
-                    Picker("", selection: $settings.aiSpellCadence) {
-                        Text("After a pause").tag("delayed")
-                        Text("Every word").tag("perword")
-                        Text("On demand (⌃⌘C)").tag("ondemand")
-                    }.labelsHidden().fixedSize()
-                    Spacer()
-                }
-                if settings.aiSpellCadence == "delayed" {
-                    HStack {
-                        Text("Delay").frame(width: 90, alignment: .leading)
-                        TextField("", value: $settings.aiSpellDelayMs, format: .number)
-                            .frame(width: 70).textFieldStyle(.roundedBorder)
-                        Text("ms after you stop typing").font(.caption).foregroundStyle(.secondary)
+                    row("Reasoning") {
+                        Picker("", selection: $settings.aiSpellReasoning) {
+                            Text("None").tag("none"); Text("Low").tag("low")
+                            Text("Medium").tag("medium"); Text("High").tag("high")
+                        }.labelsHidden().fixedSize()
                         Spacer()
                     }
+                    Text("Spell check only needs a JSON answer, so ‘None’ is fastest (launches the model with reasoning off). If your model can't disable reasoning, use ‘Low’.")
+                        .font(.caption2).foregroundStyle(.tertiary)
                 }
-                HStack {
-                    Text("Reasoning").frame(width: 90, alignment: .leading)
-                    Picker("", selection: $settings.aiSpellReasoning) {
-                        Text("None").tag("none")
-                        Text("Low").tag("low")
-                        Text("Medium").tag("medium")
-                        Text("High").tag("high")
-                    }.labelsHidden().fixedSize()
-                    Spacer()
-                }
-                Text("Spell check only needs a JSON answer, so ‘None’ is fastest (launches the model with reasoning off). If your model can't disable reasoning, use ‘Low’.")
-                    .font(.caption2).foregroundStyle(.tertiary)
-                Text("Flagged words join the ⌃⌘C review list. Use ‘AI Auto-Correct Message’ in the menu to fix them all at once.")
-                    .font(.caption2).foregroundStyle(.tertiary)
             }
+
+            if settings.aiSpellEnabled {
+                Card(title: "When it runs", icon: "clock") {
+                    Toggle("Auto-correct as I type", isOn: $settings.aiSpellAuto)
+                    Text(settings.aiSpellAuto
+                        ? "The AI checks automatically on the cadence below."
+                        : "The AI only runs on demand — press ⌃⌘C or use the menu. It never runs while you type.")
+                        .font(.caption).foregroundStyle(.secondary)
+
+                    if settings.aiSpellAuto {
+                        row("Cadence") {
+                            Picker("", selection: $settings.aiSpellCadence) {
+                                Text("After a pause").tag("delayed")
+                                Text("Every word").tag("perword")
+                            }.labelsHidden().fixedSize()
+                            Spacer()
+                        }
+                        if settings.aiSpellCadence == "delayed" {
+                            row("Delay") {
+                                TextField("", value: $settings.aiSpellDelayMs, format: .number)
+                                    .frame(width: 70).textFieldStyle(.roundedBorder)
+                                Text("ms after you stop typing").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                        }
+                    }
+                    Text("Flagged words join the ⌃⌘C review list. Use ‘AI Auto-Correct Message’ in the menu to fix them all at once.")
+                        .font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+        }
+    }
+
+    private func row<Content: View>(_ label: String, @ViewBuilder _ content: () -> Content) -> some View {
+        HStack {
+            Text(label).frame(width: 90, alignment: .leading)
+            content()
         }
     }
 }

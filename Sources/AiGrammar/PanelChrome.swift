@@ -18,7 +18,7 @@ final class PanelRouter: ObservableObject {
 }
 
 enum PanelRoute: String, CaseIterable, Identifiable {
-    case dashboard, aiModels, chat, settings, diagnostics
+    case dashboard, aiModels, chat, aiSpell, settings, diagnostics
     var id: String { rawValue }
 
     var title: String {
@@ -26,6 +26,7 @@ enum PanelRoute: String, CaseIterable, Identifiable {
         case .dashboard: return "Dashboard"
         case .aiModels: return "AI Models"
         case .chat: return "Chat with AI Model"
+        case .aiSpell: return "AI Spell Check"
         case .settings: return "Settings"
         case .diagnostics: return "Diagnostics"
         }
@@ -35,6 +36,7 @@ enum PanelRoute: String, CaseIterable, Identifiable {
         case .dashboard: return "Status and quick actions"
         case .aiModels: return "Local models for sentence rewriting"
         case .chat: return "Talk directly to a local model"
+        case .aiSpell: return "Model-based, context-aware spell checking"
         case .settings: return "Spellcheck and correction preferences"
         case .diagnostics: return "Accessibility, capabilities, and logs"
         }
@@ -44,6 +46,7 @@ enum PanelRoute: String, CaseIterable, Identifiable {
         case .dashboard: return "square.grid.2x2"
         case .aiModels: return "brain"
         case .chat: return "bubble.left.and.bubble.right"
+        case .aiSpell: return "text.magnifyingglass"
         case .settings: return "gearshape"
         case .diagnostics: return "stethoscope"
         }

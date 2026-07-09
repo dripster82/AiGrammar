@@ -38,6 +38,8 @@ final class ComposerPipeline {
     var onDismissUI: (() -> Void)?
     /// Number of outstanding spelling issues — drives the menu-bar count badge (red N / green ✓).
     var onIssueCount: ((Int) -> Void)?
+    /// An on-demand AI spell check started (true) / finished (false) — drives the badge spinner.
+    var onAIChecking: ((Bool) -> Void)?
 
     init(monitor: FocusMonitor, settings: Settings, aiChecker: AISpellChecker) {
         self.monitor = monitor
@@ -62,8 +64,9 @@ final class ComposerPipeline {
         debounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
 
-        // Schedule an AI check per its own cadence (independent of the fast dictionary debounce).
-        if settings.aiSpellEnabled, !settings.aiSpellModel.isEmpty,
+        // Schedule an AI check per its own cadence — only when auto-check is enabled. (When it's off,
+        // the AI runs on demand only, via checkNow.)
+        if settings.aiSpellEnabled, settings.aiSpellAuto, !settings.aiSpellModel.isEmpty,
            let el = monitor.lastSlackElement,
            let text = AX.string(el, kAXValueAttribute as String) {
             let boundary = boundaryJustCompleted(old: lastText, new: text)
@@ -216,11 +219,13 @@ final class ComposerPipeline {
             // On-demand: run the AI check first (if on), then step through the merged results.
             if settings.aiSpellEnabled, !settings.aiSpellModel.isEmpty {
                 Log.write("[check] running AI spell check (\(settings.aiSpellModel))…")
+                onAIChecking?(true)   // spin the composer badge while the model runs
                 aiTask?.cancel()
                 aiTask = Task { [weak self] in
                     guard let self else { return }
                     let result = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning)
                     await MainActor.run {
+                        self.onAIChecking?(false)
                         if AX.string(element, kAXValueAttribute as String) == text {
                             self.aiIssues = result.issues; self.aiIssuesText = text
                         }
@@ -243,7 +248,10 @@ final class ComposerPipeline {
            let issue = issues.first(where: {
                $0.disposition == .autocorrect && isWordComplete($0.range, in: text)
            }),
-           let correction = AutocorrectPolicy.autocorrection(for: issue.word) {
+           let guess = issue.topGuess {
+            // Curated corrections are already cased; a single-guess dictionary fix (knowlefge →
+            // knowledge) takes the guess and mirrors the original word's capitalization.
+            let correction = AutocorrectPolicy.applyingCase(of: issue.word, to: guess)
             applyAutocorrect(issue: issue, correction: correction, element: element, text: text)
             return   // the resulting edit re-triggers process(), which refreshes the badge
         }

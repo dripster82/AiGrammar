@@ -58,7 +58,8 @@ final class SpellEngine {
             let distance = guesses.first
                 .map { EditDistance.levenshtein(word.lowercased(), $0.lowercased()) } ?? 99
             let disposition = AutocorrectPolicy.classify(
-                word: word, topGuess: guesses.first, editDistance: distance)
+                word: word, topGuess: guesses.first, editDistance: distance,
+                singleGuess: guesses.count == 1)
             guard disposition != .ignore else { continue }
 
             byLocation[range.location] = SpellIssue(

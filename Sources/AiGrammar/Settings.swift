@@ -25,7 +25,12 @@ final class Settings: ObservableObject {
     @Published var aiSpellModel: String {
         didSet { UserDefaults.standard.set(aiSpellModel, forKey: "aiSpell.model") }
     }
-    /// When to run it: "delayed" (after a typing pause), "perword" (each completed word), "ondemand".
+    /// When checked, the AI check runs automatically on a timer (the cadence below). When unchecked,
+    /// it only runs on demand (⌃⌘C / menu).
+    @Published var aiSpellAuto: Bool {
+        didSet { UserDefaults.standard.set(aiSpellAuto, forKey: "aiSpell.auto") }
+    }
+    /// Automatic cadence (only used when `aiSpellAuto`): "delayed" (after a pause) or "perword".
     @Published var aiSpellCadence: String {
         didSet { UserDefaults.standard.set(aiSpellCadence, forKey: "aiSpell.cadence") }
     }
@@ -46,6 +51,7 @@ final class Settings: ObservableObject {
         rewriteEngineChoice = d.string(forKey: "rewriteEngineChoice") ?? "auto"
         aiSpellEnabled = d.object(forKey: "aiSpell.enabled") as? Bool ?? false
         aiSpellModel = d.string(forKey: "aiSpell.model") ?? ""
+        aiSpellAuto = d.object(forKey: "aiSpell.auto") as? Bool ?? false
         aiSpellCadence = d.string(forKey: "aiSpell.cadence") ?? "delayed"
         aiSpellDelayMs = d.object(forKey: "aiSpell.delayMs") as? Int ?? 700
         aiSpellReasoning = d.string(forKey: "aiSpell.reasoning") ?? "none"
