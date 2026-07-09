@@ -20,10 +20,15 @@ final class AISpellChecker {
 
     // The structured shape the model must return.
     private struct AIError: Decodable { let word: String; let suggestions: [String] }
-    private struct AIResponse: Decodable { let errors: [AIError] }
+    private struct AIResponse: Decodable { let corrected: String?; let errors: [AIError]? }
+
+    /// What `check` returns: per-word issues (for the review popover) plus the model's full corrected
+    /// message (for the one-shot "AI Auto-Correct" action).
+    struct Result { let issues: [SpellIssue]; let corrected: String? }
 
     private static let systemPrompt = """
         You are a spelling, spacing, and word-choice checker for a short chat message.
+        Ensure to check each word in context. DO NOT MISS OUT ANY WORDS.
 
         Find each incorrect span:
         - Misspelling (heer -> here)
@@ -43,14 +48,17 @@ final class AISpellChecker {
         - Do not include identical suggestions (for example "why" -> "why").
         - Do not return correct words.
 
+        Also return "corrected": the full message with every error fixed, keeping the same meaning,
+        wording, and grammar (spelling/spacing/word-choice only — do not rewrite or paraphrase).
+
         Ignore @mentions, #channels, URLs, code, email addresses, file paths, emoji shortcodes, and proper names.
 
         Return ONLY valid JSON:
-        {"errors":[{"word":"...","suggestions":["..."]}]}
+        {"corrected":"...","errors":[{"word":"...","suggestions":["..."]}]}
 
         EXAMPLE
         Input: I thnik this featre dosent work on mac becuase it keep crasing
-        Response: {"errors":[{"word":"thnik","suggestions":["think"]},{"word":"featre","suggestions":["feature"]},{"word":"dosent","suggestions":["doesn't","does not"]},{"word":"becuase","suggestions":["because"]},{"word":"keep","suggestions":["keeps"]},{"word":"crasing","suggestions":["crashing"]}]}
+        Response: {"corrected":"I think this feature does not work on mac because it keeps crashing","errors":[{"word":"thnik","suggestions":["think"]},{"word":"featre","suggestions":["feature"]},{"word":"dosent","suggestions":["doesn't","does not"]},{"word":"becuase","suggestions":["because"]},{"word":"keep","suggestions":["keeps"]},{"word":"crasing","suggestions":["crashing"]}]}
 
         BAD EXAMPLE 1 (do not add surrounding words to a suggestion)
         Input: Pleese sendd it tommorow
@@ -66,28 +74,29 @@ final class AISpellChecker {
     /// Check `text` with model id "apple" or a local model's id. `reasoning` is "none"/"low"/"medium"/
     /// "high" (none = --reasoning off). Returns located issues, or [] on any failure (never throws —
     /// spell check must not disrupt typing).
-    func check(_ text: String, modelId: String, reasoning: String = "none") async -> [SpellIssue] {
+    func check(_ text: String, modelId: String, reasoning: String = "none") async -> Result {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.count >= 2 else { return [] }
-        let errors: [AIError]
+        guard trimmed.count >= 2 else { return Result(issues: [], corrected: nil) }
+        let response: AIResponse?
         if modelId == "apple" {
-            errors = await checkApple(text)
+            response = await checkApple(text)
         } else if let path = models.path(forID: modelId) {
-            errors = await checkLocal(text, modelPath: path, reasoning: reasoning)
+            response = await checkLocal(text, modelPath: path, reasoning: reasoning)
         } else {
             Log.write("[aispell] no model for id \(modelId)")
-            return []
+            return Result(issues: [], corrected: nil)
         }
         // Superseded by a newer check (the user typed on) — drop it silently, don't touch the badge.
-        if Task.isCancelled { return [] }
+        if Task.isCancelled { return Result(issues: [], corrected: nil) }
+        let errors = response?.errors ?? []
         let issues = locate(errors, in: text)
         Log.write("[aispell] \(issues.count) issue(s) from \(errors.count) reported")
-        return issues
+        return Result(issues: issues, corrected: response?.corrected)
     }
 
     // MARK: Local GGUF (llama-server, JSON-schema constrained)
 
-    private func checkLocal(_ text: String, modelPath: String, reasoning: String) async -> [AIError] {
+    private func checkLocal(_ text: String, modelPath: String, reasoning: String) async -> AIResponse? {
         let name = (modelPath as NSString).lastPathComponent
         do {
             AIDebugLog.shared.begin(engine: "spell · \(name)", instruction: "spellcheck")
@@ -99,6 +108,7 @@ final class AISpellChecker {
             let schema: [String: Any] = [
                 "type": "object",
                 "properties": [
+                    "corrected": ["type": "string"],
                     "errors": [
                         "type": "array",
                         "items": [
@@ -111,7 +121,7 @@ final class AISpellChecker {
                         ],
                     ],
                 ],
-                "required": ["errors"],
+                "required": ["corrected", "errors"],
             ]
             var body: [String: Any] = [
                 "model": "local",
@@ -139,7 +149,7 @@ final class AISpellChecker {
                 Log.write("[aispell] local: unexpected response shape")
                 Log.ai(engine: "spell · \((modelPath as NSString).lastPathComponent)",
                        prompt: "SYSTEM:\n\(Self.systemPrompt)\n\nUSER:\n\(text)", response: raw)
-                return []
+                return nil
             }
             AIDebugLog.shared.update(content)
             AIDebugLog.shared.finish(chars: content.count)
@@ -147,18 +157,18 @@ final class AISpellChecker {
                    prompt: "SYSTEM:\n\(Self.systemPrompt)\n\nUSER:\n\(text)", response: content)
             return parse(content)
         } catch is CancellationError {
-            return []
+            return nil
         } catch let e as URLError where e.code == .cancelled {
-            return []   // superseded by a newer check — expected while typing, not an error
+            return nil   // superseded by a newer check — expected while typing, not an error
         } catch {
             Log.write("[aispell] local error: \(error.localizedDescription)")
-            return []
+            return nil
         }
     }
 
     // MARK: Apple on-device
 
-    private func checkApple(_ text: String) async -> [AIError] {
+    private func checkApple(_ text: String) async -> AIResponse? {
         #if canImport(FoundationModels)
         if #available(macOS 26.0, *) {
             do {
@@ -173,24 +183,23 @@ final class AISpellChecker {
             }
         }
         #endif
-        return []
+        return nil
     }
 
     // MARK: Parsing + locating
 
     /// Decode the model's JSON, tolerating stray prose around it by extracting the outermost object.
-    private func parse(_ content: String) -> [AIError] {
-        func decode(_ s: String) -> [AIError]? {
-            guard let data = s.data(using: .utf8),
-                  let r = try? JSONDecoder().decode(AIResponse.self, from: data) else { return nil }
-            return r.errors
+    private func parse(_ content: String) -> AIResponse? {
+        func decode(_ s: String) -> AIResponse? {
+            guard let data = s.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(AIResponse.self, from: data)
         }
         if let r = decode(content) { return r }
         if let open = content.firstIndex(of: "{"), let close = content.lastIndex(of: "}"), open < close {
             if let r = decode(String(content[open...close])) { return r }
         }
         Log.write("[aispell] could not parse JSON from model output")
-        return []
+        return nil
     }
 
     /// Map each reported word to a real NSRange in `text` (whole-word, left-to-right, one range per

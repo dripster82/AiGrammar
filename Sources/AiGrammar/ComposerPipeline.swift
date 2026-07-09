@@ -103,13 +103,13 @@ final class ComposerPipeline {
         aiTask?.cancel()
         aiTask = Task { [weak self] in
             guard let self else { return }
-            let issues = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning)
+            let result = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning)
             if Task.isCancelled { return }   // superseded — don't overwrite newer results
             await MainActor.run {
                 // Only apply if the composer still holds exactly what we checked.
                 guard let el = self.monitor.lastSlackElement,
                       AX.string(el, kAXValueAttribute as String) == text else { return }
-                self.aiIssues = issues
+                self.aiIssues = result.issues
                 self.aiIssuesText = text
                 let count = self.mergedIssues(in: text).count
                 self.onIssueCount?(self.settings.suggestionsEnabled ? count : 0)
@@ -219,10 +219,10 @@ final class ComposerPipeline {
                 aiTask?.cancel()
                 aiTask = Task { [weak self] in
                     guard let self else { return }
-                    let ai = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning)
+                    let result = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning)
                     await MainActor.run {
                         if AX.string(element, kAXValueAttribute as String) == text {
-                            self.aiIssues = ai; self.aiIssuesText = text
+                            self.aiIssues = result.issues; self.aiIssuesText = text
                         }
                         self.logManual(text: text)
                         self.beginReview(element: element)
@@ -306,8 +306,9 @@ final class ComposerPipeline {
 
     // MARK: Bulk AI auto-correct
 
-    /// Run an AI spell check on the whole message and apply the top suggestion for every flagged word
-    /// (AI + dictionary) in a single write, as one undoable change. Triggered from the menu.
+    /// Run an AI spell check on the whole message and fix it in a single undoable change. Prefers the
+    /// model's full "corrected" sentence (best quality); falls back to applying each top suggestion.
+    /// Triggered from the menu.
     func autocorrectSentenceWithAI() {
         _ = monitor.acquireSlackComposer()
         guard let element = monitor.lastSlackElement,
@@ -316,15 +317,23 @@ final class ComposerPipeline {
         }
         Task { [weak self] in
             guard let self else { return }
-            let ai = (self.settings.aiSpellEnabled && !self.settings.aiSpellModel.isEmpty)
-                ? await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning) : []
-            await MainActor.run { self.applyAllCorrections(ai: ai, element: element, text: text) }
+            let result = (self.settings.aiSpellEnabled && !self.settings.aiSpellModel.isEmpty)
+                ? await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning)
+                : AISpellChecker.Result(issues: [], corrected: nil)
+            await MainActor.run { self.applyAICorrection(result, element: element, text: text) }
         }
     }
 
-    private func applyAllCorrections(ai aiIssues: [SpellIssue], element: AXUIElement, text: String) {
-        // AI issues first; add dictionary suggestions that don't overlap them.
-        var all = aiIssues
+    private func applyAICorrection(_ result: AISpellChecker.Result, element: AXUIElement, text: String) {
+        // Best path: the model's full corrected message (fixes spacing/splits/word-choice fluently).
+        if let corrected = result.corrected?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !corrected.isEmpty, corrected != text {
+            commitWholeMessage(corrected, element: element, original: text,
+                               note: "auto-corrected whole message via model 'corrected'")
+            return
+        }
+        // Fallback: apply each top suggestion (AI first, then non-overlapping dictionary).
+        var all = result.issues
         for d in spell.issues(in: text) where !all.contains(where: {
             NSIntersectionRange($0.range, d.range).length > 0
         }) { all.append(d) }
@@ -342,16 +351,20 @@ final class ComposerPipeline {
             applied += 1
         }
         guard applied > 0 else { onDismissUI?(); return }
+        commitWholeMessage(working as String, element: element, original: text,
+                           note: "auto-corrected \(applied) word(s) in one pass")
+    }
 
+    /// Replace the whole composer with `newText` as one undoable change and show the undo chip.
+    private func commitWholeMessage(_ newText: String, element: AXUIElement, original: String, note: String) {
         suppress()
-        guard AX.setValue(element, working as String) == .success else {
+        guard AX.setValue(element, newText) == .success else {
             Log.write("[aispell] auto-correct: setValue rejected"); return
         }
-        Log.write("[aispell] auto-corrected \(applied) word(s) in one pass")
-        // A single whole-message undo record so the user can revert the batch from the chip.
+        Log.write("[aispell] \(note)")
         let record = Correction(
-            original: text, corrected: working as String,
-            rangeAfter: NSRange(location: 0, length: working.length),
+            original: original, corrected: newText,
+            rangeAfter: NSRange(location: 0, length: (newText as NSString).length),
             contextBefore: "", contextAfter: "")
         corrections.append(record)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
