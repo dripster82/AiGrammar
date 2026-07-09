@@ -83,7 +83,7 @@ if [[ -d "$APP/Contents/Resources/llama" ]]; then
 fi
 
 # Sign the app with a STABLE identifier so its designated requirement is constant across rebuilds.
-codesign "${SIGN[@]}" --identifier io.github.dripster82.AiGrammar "$APP"
+codesign "${SIGN[@]}" --identifier uk.co.ketelle.aigrammar "$APP"
 if [[ -n "${IDENTITY:-}" ]]; then
   echo "Signed with: $IDENTITY"
 else

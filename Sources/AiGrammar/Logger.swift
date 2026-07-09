@@ -14,7 +14,7 @@ enum Log {
         return url
     }()
 
-    private static let queue = DispatchQueue(label: "io.github.dripster82.AiGrammar.log")
+    private static let queue = DispatchQueue(label: "uk.co.ketelle.aigrammar.log")
     private static let stamp: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd HH:mm:ss.SSS"

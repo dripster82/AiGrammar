@@ -9,7 +9,7 @@
 	<key>CFBundleIconFile</key>
 	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.dripster82.AiGrammar</string>
+	<string>uk.co.ketelle.aigrammar</string>
 	<key>CFBundleName</key>
 	<string>AiGrammar</string>
 	<key>CFBundlePackageType</key>
