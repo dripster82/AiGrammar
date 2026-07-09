@@ -40,8 +40,6 @@ cloud calls, no telemetry of typed content, free to run.
 - **Temperature**, **Top-p**, and **Max tokens** — apply to both the Apple and llama.cpp engines.
 - **Reasoning effort** (None / Low / Medium / High) for reasoning models. *None* launches the local
   server with reasoning disabled (`--reasoning off`); Low/Medium/High map to `reasoning_effort`.
-- **Short-circuit thinking** — prefills an empty `<think></think>` block so models with baked-in
-  reasoning (e.g. MiMo) skip straight to the answer.
 - **Advanced (extra JSON)** — merged into the llama.cpp request for any model-specific option
   (`top_k`, `min_p`, `repeat_penalty`, …).
 

@@ -13,9 +13,6 @@ final class InferenceParams: ObservableObject {
     @Published var reasoningEffort: String { didSet { d.set(reasoningEffort, forKey: "ip.reasoningEffort") } }
     /// Advanced: extra JSON merged into the request body (e.g. {"top_k":40,"min_p":0.05}).
     @Published var extraJSON: String { didSet { d.set(extraJSON, forKey: "ip.extraJSON") } }
-    /// Prefill an empty `<think></think>` block so models with baked-in reasoning (e.g. MiMo) skip
-    /// straight to the answer. Experimental — depends on the model continuing an assistant prefix.
-    @Published var shortcircuitThinking: Bool { didSet { d.set(shortcircuitThinking, forKey: "ip.shortcircuit") } }
 
     private let d = UserDefaults.standard
 
@@ -27,27 +24,21 @@ final class InferenceParams: ObservableObject {
         let re = d.string(forKey: "ip.reasoningEffort") ?? ""
         reasoningEffort = re.isEmpty ? "low" : re
         extraJSON = d.string(forKey: "ip.extraJSON") ?? ""
-        shortcircuitThinking = d.bool(forKey: "ip.shortcircuit")
     }
 
     func resetToDefaults() {
         temperature = 0.3; topP = 0.95; maxTokens = 2048; reasoningEffort = "low"
-        extraJSON = ""; shortcircuitThinking = false
+        extraJSON = ""
     }
 
     /// Build the request body for a chat-completions call.
     func requestBody(messages: [[String: String]], stream: Bool) -> [String: Any] {
-        var msgs = messages
-        if shortcircuitThinking {
-            // Prefill an empty reasoning block; llama.cpp continues the assistant turn from here.
-            msgs.append(["role": "assistant", "content": "<think>\n\n</think>\n\n"])
-        }
         var body: [String: Any] = [
             "model": "local",
             "stream": stream,
             "temperature": temperature,
             "top_p": topP,
-            "messages": msgs,
+            "messages": messages,
         ]
         if maxTokens > 0 { body["max_tokens"] = maxTokens }
         // "none" is handled at the server launch (--reasoning off), not here. low/medium/high map to
