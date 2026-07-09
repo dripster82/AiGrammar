@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// Manages a local `llama-server` (llama.cpp) subprocess that serves an OpenAI-compatible API on
@@ -7,6 +8,28 @@ final class LlamaServer {
     private var process: Process?
     private(set) var port = 0
     private var loadedModelPath: String?
+
+    /// A pidfile records the running server so a crash/force-quit orphan can be killed on next launch.
+    private static var pidFileURL: URL {
+        ModelManager.modelsDirectory.deletingLastPathComponent().appendingPathComponent("llama-server.pid")
+    }
+
+    /// Kill a llama-server left running by a previous session that didn't shut down cleanly (crash /
+    /// force-quit / SIGKILL). Verifies the pid is actually a llama-server before killing (pid reuse).
+    static func killStaleServer() {
+        guard let s = try? String(contentsOf: pidFileURL, encoding: .utf8),
+              let pid = Int32(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+        if executablePath(pid)?.contains("llama-server") == true {
+            kill(pid, SIGKILL)
+            Log.write("[llama] killed stale server pid \(pid) from a previous session")
+        }
+        try? FileManager.default.removeItem(at: pidFileURL)
+    }
+
+    private static func executablePath(_ pid: Int32) -> String? {
+        var buf = [CChar](repeating: 0, count: 4096)
+        return proc_pidpath(pid, &buf, UInt32(buf.count)) > 0 ? String(cString: buf) : nil
+    }
 
     /// Locate the `llama-server` binary, preferring the copy embedded in the app bundle so it works
     /// with no separate install. Falls back to an explicit user setting, then common install paths.
@@ -54,6 +77,7 @@ final class LlamaServer {
         port = chosenPort
         loadedModelPath = modelPath
         loadedReasoningOff = reasoningOff
+        try? "\(proc.processIdentifier)".write(to: Self.pidFileURL, atomically: true, encoding: .utf8)
         Log.write("[llama] started llama-server pid \(proc.processIdentifier) on :\(chosenPort) for \((modelPath as NSString).lastPathComponent)\(reasoningOff ? " (reasoning off)" : "")")
         try await waitForHealth(timeout: 60)
         Log.write("[llama] server healthy on :\(chosenPort)")
@@ -79,9 +103,15 @@ final class LlamaServer {
 
     func stop() {
         if let p = process, p.isRunning {
-            p.terminate()
-            Log.write("[llama] stopped server")
+            let pid = p.processIdentifier
+            p.terminate()                       // SIGTERM
+            // If it doesn't exit promptly, force-kill so it can't linger holding GBs of RAM.
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+                if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
+            }
+            Log.write("[llama] stopped server pid \(pid)")
         }
+        try? FileManager.default.removeItem(at: Self.pidFileURL)
         process = nil
         loadedModelPath = nil
         port = 0

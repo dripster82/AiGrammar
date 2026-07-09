@@ -28,6 +28,7 @@ final class GGUFRewriter: RewriteEngine {
                     try await server.ensureRunning(modelPath: modelPath,
                                                    reasoningOff: params.reasoningEffort == "none")
                     Log.write("[rewrite] llama.cpp: \(instruction.id) on \(text.count) chars")
+                    AIDebugLog.shared.begin(engine: "llama.cpp · \(modelName)", instruction: instruction.id)
 
                     var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!)
                     request.httpMethod = "POST"
@@ -50,9 +51,11 @@ final class GGUFRewriter: RewriteEngine {
                               let delta = choices.first?["delta"] as? [String: Any],
                               let content = delta["content"] as? String else { continue }
                         acc += content
+                        AIDebugLog.shared.update(acc)   // live raw stream → debug panel
                         continuation.yield(RewriteText.display(acc))
                     }
                     continuation.yield(RewriteText.finalDisplay(acc))   // never leave it on "Thinking…"
+                    AIDebugLog.shared.finish(chars: acc.count)
                     Log.write("[rewrite] llama.cpp raw response (\(acc.count) chars):\n\(acc)")
                 } catch {
                     Log.write("[rewrite] llama.cpp error: \(error.localizedDescription)")

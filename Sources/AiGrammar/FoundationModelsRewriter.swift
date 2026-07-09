@@ -53,12 +53,15 @@ final class FoundationModelsRewriter: RewriteEngine {
                         maximumResponseTokens: params.maxTokens > 0 ? params.maxTokens : nil)
                     // Send the message alone (no "Message:" label to avoid it being echoed back).
                     let stream = session.streamResponse(to: text, options: options)
+                    AIDebugLog.shared.begin(engine: "Apple on-device", instruction: instruction.id)
                     var raw = ""
                     for try await partial in stream {
                         raw = partial.content
+                        AIDebugLog.shared.update(raw)   // live raw stream → debug panel
                         continuation.yield(RewriteText.display(raw))   // cumulative, de-preambled
                     }
                     continuation.yield(RewriteText.finalDisplay(raw))   // never leave it on "Thinking…"
+                    AIDebugLog.shared.finish(chars: raw.count)
                     Log.write("[rewrite] Apple raw response (\(raw.count) chars):\n\(raw)")
                 } catch {
                     Log.write("[rewrite] error: \(error.localizedDescription)")

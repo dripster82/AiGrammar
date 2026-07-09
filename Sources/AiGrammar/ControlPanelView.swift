@@ -376,6 +376,13 @@ private struct SettingsPage: View {
                 Spacer()
             }
 
+            HStack(spacing: 4) {
+                Toggle("Short-circuit thinking", isOn: $params.shortcircuitThinking)
+                Image(systemName: "info.circle").font(.caption).foregroundStyle(.secondary)
+                    .help("Prefills an empty <think></think> block so models with baked-in reasoning (e.g. MiMo) skip straight to the answer. Experimental — works only if the model continues an assistant prefix. Try this when Reasoning effort: None doesn't stop a model from thinking.")
+                Spacer()
+            }
+
             DisclosureGroup("Advanced (extra JSON)") {
                 Text("Merged into the llama.cpp request, e.g. {\"top_k\": 40, \"min_p\": 0.05, \"repeat_penalty\": 1.1}")
                     .font(.caption2).foregroundStyle(.tertiary)

@@ -32,7 +32,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastIssueCount = 0
     private var cancellables = Set<AnyCancellable>()
 
+    private var sigterm: DispatchSourceSignal?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Kill any llama-server orphaned by a previous crash/force-quit before doing anything else.
+        LlamaServer.killStaleServer()
+        // Also clean up our llama-server if we're SIGTERM'd (e.g. `pkill`), where applicationWill
+        // Terminate doesn't run. (SIGKILL can't be caught — that's what killStaleServer covers.)
+        signal(SIGTERM, SIG_IGN)
+        let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+        src.setEventHandler { [weak self] in self?.rewriteController.shutdown(); NSApp.terminate(nil) }
+        src.resume()
+        sigterm = src
+
         // Dev hook: exercise the spell engine (NSSpellChecker + policy) headlessly and quit.
         if FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.aigrammar-selftest") {
             try? FileManager.default.removeItem(atPath: NSHomeDirectory() + "/.aigrammar-selftest")

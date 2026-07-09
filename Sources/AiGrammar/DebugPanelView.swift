@@ -4,10 +4,13 @@ import SwiftUI
 /// and the capability checklist that decides the product's write/overlay strategy.
 struct DebugPanelView: View {
     @ObservedObject var monitor: FocusMonitor
+    @ObservedObject private var aiLog = AIDebugLog.shared
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
+                aiStreamSection
+                Divider()
                 permissionSection
                 Divider()
                 focusSection
@@ -22,6 +25,22 @@ struct DebugPanelView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(minWidth: 480, minHeight: 560)
+    }
+
+    private var aiStreamSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            sectionTitle("Live AI stream")
+            Text(aiLog.header).font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                Text(aiLog.raw.isEmpty ? "(waiting for a rewrite…)" : aiLog.raw)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 160)
+            .padding(8)
+            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
+        }
     }
 
     private var permissionSection: some View {
