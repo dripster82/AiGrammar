@@ -1,0 +1,44 @@
+{
+  "configurations": [
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:AiGrammar}",
+      "name": "Debug CoreSelfTest",
+      "target": "CoreSelfTest",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug CoreSelfTest"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:AiGrammar}",
+      "name": "Release CoreSelfTest",
+      "target": "CoreSelfTest",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release CoreSelfTest"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:AiGrammar}",
+      "name": "Debug AiGrammar",
+      "target": "AiGrammar",
+      "configuration": "debug",
+      "preLaunchTask": "swift: Build Debug AiGrammar"
+    },
+    {
+      "type": "swift",
+      "request": "launch",
+      "args": [],
+      "cwd": "${workspaceFolder:AiGrammar}",
+      "name": "Release AiGrammar",
+      "target": "AiGrammar",
+      "configuration": "release",
+      "preLaunchTask": "swift: Build Release AiGrammar"
+    }
+  ]
+}
