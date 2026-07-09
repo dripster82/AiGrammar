@@ -64,6 +64,8 @@ final class FoundationModelsRewriter: RewriteEngine {
                     continuation.yield(RewriteText.finalDisplay(raw))   // never leave it on "Thinking…"
                     AIDebugLog.shared.finish(chars: raw.count)
                     Log.write("[rewrite] Apple raw response (\(raw.count) chars):\n\(raw)")
+                    Log.ai(engine: "rewrite · Apple",
+                           prompt: "SYSTEM:\n\(systemPrompt)\n\nUSER:\n\(text)", response: raw)
                 } catch is CancellationError {
                     Log.write("[rewrite] Apple generation cancelled")
                 } catch {

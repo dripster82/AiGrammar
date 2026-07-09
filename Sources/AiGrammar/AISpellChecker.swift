@@ -23,12 +23,16 @@ final class AISpellChecker {
     private struct AIResponse: Decodable { let errors: [AIError] }
 
     private static let systemPrompt =
-        "You are a spelling and word-choice checker for a short chat message. Identify words that are "
-        + "misspelled OR the wrong word for the context (e.g. their/there/they're, form/from, "
-        + "affect/effect, your/you're). For each problem word return the word exactly as written and "
-        + "1 to 3 suggested corrections ordered most-likely first. Do NOT include words that are "
-        + "correctly spelled and correctly used. Ignore @mentions, #channels, URLs, code, and proper "
-        + "names. Respond ONLY with JSON of the form {\"errors\":[{\"word\":\"...\",\"suggestions\":[\"...\"]}]}."
+        "You are a spelling and word-choice checker for a short chat message. Find each span of text "
+        + "that is wrong: a misspelling (heer→here), a word split by a stray space (wh y→why), words "
+        + "run together or a space in the wrong place (gettin gthinks→getting things), or the wrong "
+        + "word for the context (their/there/they're, form/from, affect/effect, your/you're). "
+        + "A span may be one word or a few adjacent words. For each, set \"word\" to the span EXACTLY "
+        + "as it appears in the message (same characters and spacing) and \"suggestions\" to 1-3 "
+        + "corrected replacements, most-likely first. Do NOT include text that is already correct. "
+        + "Do NOT rewrite the whole message or change meaning or tone. Ignore @mentions, #channels, "
+        + "URLs, code, and proper names. Respond ONLY with JSON of the form "
+        + "{\"errors\":[{\"word\":\"...\",\"suggestions\":[\"...\"]}]}."
 
     /// Check `text` with model id "apple" or a local model's id. Returns located issues, or [] on any
     /// failure (never throws — spell check must not disrupt typing).
@@ -52,7 +56,9 @@ final class AISpellChecker {
     // MARK: Local GGUF (llama-server, JSON-schema constrained)
 
     private func checkLocal(_ text: String, modelPath: String) async -> [AIError] {
+        let name = (modelPath as NSString).lastPathComponent
         do {
+            AIDebugLog.shared.begin(engine: "spell · \(name)", instruction: "spellcheck")
             try await server.ensureRunning(modelPath: modelPath, reasoningOff: true)
             var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!)
             request.httpMethod = "POST"
@@ -94,9 +100,16 @@ final class AISpellChecker {
                   let choices = json["choices"] as? [[String: Any]],
                   let content = (choices.first?["message"] as? [String: Any])?["content"] as? String
             else {
+                let raw = String(data: data, encoding: .utf8) ?? "(non-utf8)"
                 Log.write("[aispell] local: unexpected response shape")
+                Log.ai(engine: "spell · \((modelPath as NSString).lastPathComponent)",
+                       prompt: "SYSTEM:\n\(Self.systemPrompt)\n\nUSER:\n\(text)", response: raw)
                 return []
             }
+            AIDebugLog.shared.update(content)
+            AIDebugLog.shared.finish(chars: content.count)
+            Log.ai(engine: "spell · \(name)",
+                   prompt: "SYSTEM:\n\(Self.systemPrompt)\n\nUSER:\n\(text)", response: content)
             return parse(content)
         } catch is CancellationError {
             return []
@@ -115,6 +128,8 @@ final class AISpellChecker {
                 let session = LanguageModelSession(instructions: Self.systemPrompt)
                 let options = GenerationOptions(temperature: 0.1)
                 let response = try await session.respond(to: text, options: options)
+                Log.ai(engine: "spell · Apple",
+                       prompt: "SYSTEM:\n\(Self.systemPrompt)\n\nUSER:\n\(text)", response: response.content)
                 return parse(response.content)
             } catch {
                 Log.write("[aispell] apple error: \(error.localizedDescription)")

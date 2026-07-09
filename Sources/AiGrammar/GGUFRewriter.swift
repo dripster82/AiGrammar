@@ -58,6 +58,8 @@ final class GGUFRewriter: RewriteEngine {
                     continuation.yield(RewriteText.finalDisplay(acc))   // never leave it on "Thinking…"
                     AIDebugLog.shared.finish(chars: acc.count)
                     Log.write("[rewrite] llama.cpp raw response (\(acc.count) chars):\n\(acc)")
+                    Log.ai(engine: "rewrite · \(modelName)",
+                           prompt: "SYSTEM:\n\(systemPrompt)\n\nUSER:\n\(text)", response: acc)
                 } catch is CancellationError {
                     Log.write("[rewrite] llama.cpp generation cancelled")
                 } catch let error as URLError where error.code == .cancelled {

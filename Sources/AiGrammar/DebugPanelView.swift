@@ -6,12 +6,23 @@ struct DebugPanelView: View {
     @ObservedObject var monitor: FocusMonitor
     @ObservedObject private var aiLog = AIDebugLog.shared
 
+    // Per-channel log toggles (default on; `.general` is always on and not shown). Log reads these
+    // same UserDefaults keys, so flipping a toggle takes effect immediately.
+    @AppStorage("log.focus") private var logFocus = true
+    @AppStorage("log.pipeline") private var logPipeline = true
+    @AppStorage("log.rewrite") private var logRewrite = true
+    @AppStorage("log.spell") private var logSpell = true
+    @AppStorage("log.llama") private var logLlama = true
+    @AppStorage("log.aiPayload") private var logAIPayload = true
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 aiStreamSection
                 Divider()
                 permissionSection
+                Divider()
+                loggingSection
                 Divider()
                 focusSection
                 Divider()
@@ -77,6 +88,22 @@ struct DebugPanelView: View {
             }
             .font(.caption)
         }
+    }
+
+    private var loggingSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            sectionTitle("Logging")
+            Text("Choose what gets written to the log. ‘AI prompts & responses’ logs the full prompt sent and the model's raw reply — the fastest way to see why spell check differs from rewrite.")
+                .font(.caption).foregroundStyle(.secondary)
+            Toggle("Focus / Accessibility", isOn: $logFocus)
+            Toggle("Spellcheck pipeline", isOn: $logPipeline)
+            Toggle("AI rewrite", isOn: $logRewrite)
+            Toggle("AI spell check", isOn: $logSpell)
+            Toggle("Local model server", isOn: $logLlama)
+            Toggle("AI prompts & responses (verbose)", isOn: $logAIPayload)
+        }
+        .font(.callout)
+        .toggleStyle(.checkbox)
     }
 
     private func relaunch() {
