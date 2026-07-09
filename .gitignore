@@ -5,3 +5,6 @@ build/
 .swiftpm/
 vendor/
 docs/
+
+# Internal planning docs — not published
+Plan/
