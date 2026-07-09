@@ -22,17 +22,46 @@ final class AISpellChecker {
     private struct AIError: Decodable { let word: String; let suggestions: [String] }
     private struct AIResponse: Decodable { let errors: [AIError] }
 
-    private static let systemPrompt =
-        "You are a spelling and word-choice checker for a short chat message. Find each span of text "
-        + "that is wrong: a misspelling (heer→here), a word split by a stray space (wh y→why), words "
-        + "run together or a space in the wrong place (gettin gthinks→getting things), or the wrong "
-        + "word for the context (their/there/they're, form/from, affect/effect, your/you're). "
-        + "A span may be one word or a few adjacent words. For each, set \"word\" to the span EXACTLY "
-        + "as it appears in the message (same characters and spacing) and \"suggestions\" to 1-3 "
-        + "corrected replacements, most-likely first. Do NOT include text that is already correct. "
-        + "Do NOT rewrite the whole message or change meaning or tone. Ignore @mentions, #channels, "
-        + "URLs, code, and proper names. Respond ONLY with JSON of the form "
-        + "{\"errors\":[{\"word\":\"...\",\"suggestions\":[\"...\"]}]}."
+    private static let systemPrompt = """
+        You are a spelling, spacing, and word-choice checker for a short chat message.
+
+        Find each incorrect span:
+        - Misspelling (heer -> here)
+        - Word split by a stray space (wh y -> why)
+        - Words joined or spaced incorrectly (gettin gthinks -> getting things)
+        - Wrong word for the context (their/there/they're, form/from, affect/effect, your/you're)
+
+        A span may be one word or several adjacent words.
+
+        For each error:
+        - "word" = the exact text from the input.
+        - "suggestions" = 1-3 replacements, best first.
+        - Suggestions replace only the matched span.
+        - Do not include surrounding words.
+        - Do not rewrite, extend, or complete the sentence.
+        - Keep the same meaning and grammar.
+        - Do not include identical suggestions (for example "why" -> "why").
+        - Do not return correct words.
+
+        Ignore @mentions, #channels, URLs, code, email addresses, file paths, emoji shortcodes, and proper names.
+
+        Return ONLY valid JSON:
+        {"errors":[{"word":"...","suggestions":["..."]}]}
+
+        EXAMPLE
+        Input: I thnik this featre dosent work on mac becuase it keep crasing
+        Response: {"errors":[{"word":"thnik","suggestions":["think"]},{"word":"featre","suggestions":["feature"]},{"word":"dosent","suggestions":["doesn't","does not"]},{"word":"becuase","suggestions":["because"]},{"word":"keep","suggestions":["keeps"]},{"word":"crasing","suggestions":["crashing"]}]}
+
+        BAD EXAMPLE 1 (do not add surrounding words to a suggestion)
+        Input: Pleese sendd it tommorow
+        BAD: {"errors":[{"word":"tommorow","suggestions":["tomorrow","send it tomorrow"]}]}
+        GOOD: {"errors":[{"word":"tommorow","suggestions":["tomorrow"]}]}
+
+        BAD EXAMPLE 2 (do not return correct words or identical suggestions)
+        Input: I recieved the email yesterday
+        BAD: {"errors":[{"word":"yesterday","suggestions":["yesterday"]}]}
+        GOOD: {"errors":[{"word":"recieved","suggestions":["received"]}]}
+        """
 
     /// Check `text` with model id "apple" or a local model's id. Returns located issues, or [] on any
     /// failure (never throws — spell check must not disrupt typing).

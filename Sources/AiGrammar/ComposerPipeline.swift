@@ -116,16 +116,16 @@ final class ComposerPipeline {
         }
     }
 
-    /// Dictionary issues plus AI issues (only while the AI results still match the current text),
-    /// de-duplicated by overlapping range, minus ignored words, left-to-right.
+    /// AI issues take precedence, plus any dictionary issues that don't overlap one (only while the
+    /// AI results still match the current text). Minus ignored words, left-to-right.
     private func mergedIssues(in text: String) -> [SpellIssue] {
-        var all = spell.issues(in: text)
-        if text == aiIssuesText {
-            for ai in aiIssues where !all.contains(where: {
-                NSIntersectionRange($0.range, ai.range).length > 0
-            }) {
-                all.append(ai)
-            }
+        // AI first so its context-aware suggestion wins over the dictionary's context-free guess
+        // for the same word (e.g. AI "wong→wrong" beats dictionary "wong→song").
+        var all = (text == aiIssuesText) ? aiIssues : []
+        for d in spell.issues(in: text) where !all.contains(where: {
+            NSIntersectionRange($0.range, d.range).length > 0
+        }) {
+            all.append(d)
         }
         return all.filter { !ignored.contains($0.word.lowercased()) }
                   .sorted { $0.range.location < $1.range.location }
