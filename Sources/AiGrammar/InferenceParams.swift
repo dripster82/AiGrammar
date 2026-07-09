@@ -40,15 +40,10 @@ final class InferenceParams: ObservableObject {
             "messages": messages,
         ]
         if maxTokens > 0 { body["max_tokens"] = maxTokens }
-        switch reasoningEffort {
-        case "none":
-            // Ask the chat template to skip thinking (Qwen3 etc.). gpt-oss can't fully disable.
-            body["chat_template_kwargs"] = ["enable_thinking": false]
-            body["reasoning_budget"] = 0
-        case "low", "medium", "high":
+        // "none" is handled at the server launch (--reasoning off), not here. low/medium/high map to
+        // the OpenAI-style reasoning_effort param (used by e.g. gpt-oss).
+        if ["low", "medium", "high"].contains(reasoningEffort) {
             body["reasoning_effort"] = reasoningEffort
-        default:
-            break
         }
         // Extra JSON merges last, so the user can override any of the above per their model.
         if let data = extraJSON.data(using: .utf8), !extraJSON.trimmingCharacters(in: .whitespaces).isEmpty,

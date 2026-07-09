@@ -366,7 +366,7 @@ private struct SettingsPage: View {
             Text("llama.cpp only").font(.caption2.weight(.semibold)).foregroundStyle(.tertiary)
 
             HStack {
-                labelWithInfo("Reasoning effort", "For reasoning models: how much the model 'thinks' before answering. Higher = more thorough but slower. None tries to disable thinking (works for Qwen3-style models; gpt-oss can't be fully disabled). Ignored by models that don't reason.")
+                labelWithInfo("Reasoning effort", "For reasoning models: how much the model 'thinks' before answering. Higher = more thorough but slower. None disables thinking (llama.cpp launches the model with --reasoning off; the local server restarts automatically when you change this). Low/Medium/High map to reasoning_effort for models that support it.")
                 Picker("", selection: $params.reasoningEffort) {
                     Text("None").tag("none")
                     Text("Low").tag("low")

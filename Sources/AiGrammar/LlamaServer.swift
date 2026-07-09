@@ -26,26 +26,35 @@ final class LlamaServer {
 
     static var isInstalled: Bool { serverBinaryPath() != nil }
 
-    /// Ensure a server is running for `modelPath`. Reuses the running one if the model is unchanged.
-    func ensureRunning(modelPath: String) async throws {
-        if let p = process, p.isRunning, loadedModelPath == modelPath { return }
+    private var loadedReasoningOff = false
+
+    /// Ensure a server is running for `modelPath`. Reuses the running one unless the model OR the
+    /// reasoning-off setting changed (reasoning is a server-launch flag, not a request parameter).
+    func ensureRunning(modelPath: String, reasoningOff: Bool) async throws {
+        if let p = process, p.isRunning, loadedModelPath == modelPath, loadedReasoningOff == reasoningOff {
+            return
+        }
         stop()
         guard let binary = Self.serverBinaryPath() else {
             throw NSError(domain: "AiGrammar", code: 1, userInfo: [NSLocalizedDescriptionKey:
                 "llama-server not found — install llama.cpp (see docs/llama-setup.md) or set its path in Settings."])
         }
         let chosenPort = Int.random(in: 8100...8999)
+        var args = ["-m", modelPath, "--host", "127.0.0.1", "--port", "\(chosenPort)",
+                    "-c", "4096", "--no-webui"]
+        // Reasoning is controlled at launch: "--reasoning off" disables thinking for the whole run.
+        if reasoningOff { args += ["--reasoning", "off", "--reasoning-budget", "0"] }
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: binary)
-        proc.arguments = ["-m", modelPath, "--host", "127.0.0.1", "--port", "\(chosenPort)",
-                          "-c", "4096", "--no-webui"]
+        proc.arguments = args
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
         try proc.run()
         process = proc
         port = chosenPort
         loadedModelPath = modelPath
-        Log.write("[llama] started llama-server pid \(proc.processIdentifier) on :\(chosenPort) for \((modelPath as NSString).lastPathComponent)")
+        loadedReasoningOff = reasoningOff
+        Log.write("[llama] started llama-server pid \(proc.processIdentifier) on :\(chosenPort) for \((modelPath as NSString).lastPathComponent)\(reasoningOff ? " (reasoning off)" : "")")
         try await waitForHealth(timeout: 60)
         Log.write("[llama] server healthy on :\(chosenPort)")
     }

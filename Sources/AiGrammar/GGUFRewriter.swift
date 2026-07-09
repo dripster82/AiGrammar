@@ -25,7 +25,8 @@ final class GGUFRewriter: RewriteEngine {
         AsyncStream { continuation in
             Task {
                 do {
-                    try await server.ensureRunning(modelPath: modelPath)
+                    try await server.ensureRunning(modelPath: modelPath,
+                                                   reasoningOff: params.reasoningEffort == "none")
                     Log.write("[rewrite] llama.cpp: \(instruction.id) on \(text.count) chars")
 
                     var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!)
