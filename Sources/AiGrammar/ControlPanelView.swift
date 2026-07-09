@@ -8,7 +8,7 @@ struct ControlPanelView: View {
     @ObservedObject var prompts: PromptStore
     @ObservedObject var params: InferenceParams
     @ObservedObject var router: PanelRouter
-    @ObservedObject var chat: ChatController
+    let chat: ChatController   // observed by ChatPage only, so chat updates don't re-render the whole panel
     private var route: PanelRoute { router.route }
 
     var body: some View {
@@ -563,7 +563,11 @@ private struct ChatPage: View {
             Divider().overlay(PanelTheme.border)
             transcript
             Divider().overlay(PanelTheme.border)
-            composer
+            ChatComposer(
+                streaming: chat.streaming,
+                disabled: chat.modelId.isEmpty,
+                onSend: { chat.send($0) },
+                onStop: { chat.stop() })
         }
     }
 
@@ -612,29 +616,51 @@ private struct ChatPage: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var composer: some View {
+}
+
+/// The message box, kept in local @State so typing/pasting only re-renders this small view — not
+/// the whole control panel or the chat transcript (which was making large pastes crawl).
+private struct ChatComposer: View {
+    let streaming: Bool
+    let disabled: Bool
+    let onSend: (String) -> Void
+    let onStop: () -> Void
+    @State private var text = ""
+
+    var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
-            TextField("Message…", text: $chat.input, axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...6)
-                .padding(8)
+            TextEditor(text: $text)
+                .font(.callout)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 22, maxHeight: 120)
+                .padding(6)
                 .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-                .onSubmit { chat.send() }
-                .disabled(chat.modelId.isEmpty)
-            if chat.streaming {
-                Button { chat.stop() } label: {
-                    Image(systemName: "stop.circle.fill").font(.title2)
-                }.buttonStyle(.plain).help("Stop generating")
-            } else {
-                Button { chat.send() } label: {
-                    Image(systemName: "arrow.up.circle.fill").font(.title2)
+                .overlay(alignment: .topLeading) {
+                    if text.isEmpty {
+                        Text("Message…").foregroundStyle(.tertiary)
+                            .padding(.horizontal, 11).padding(.vertical, 14).allowsHitTesting(false)
+                    }
                 }
-                .buttonStyle(.plain)
-                .disabled(chat.input.trimmingCharacters(in: .whitespaces).isEmpty || chat.modelId.isEmpty)
-                .help("Send")
+                .disabled(disabled)
+            if streaming {
+                Button(action: onStop) { Image(systemName: "stop.circle.fill").font(.title2) }
+                    .buttonStyle(.plain).help("Stop generating")
+            } else {
+                Button(action: send) { Image(systemName: "arrow.up.circle.fill").font(.title2) }
+                    .buttonStyle(.plain)
+                    .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty || disabled)
+                    .help("Send  (⌘↩)")
+                    .keyboardShortcut(.return, modifiers: .command)
             }
         }
         .padding(.horizontal, 16).padding(.vertical, 10)
+    }
+
+    private func send() {
+        let t = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !t.isEmpty else { return }
+        onSend(t)
+        text = ""
     }
 }
 

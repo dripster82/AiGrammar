@@ -16,7 +16,6 @@ final class ChatController: ObservableObject {
     }
 
     @Published var messages: [Msg] = []
-    @Published var input = ""
     @Published var streaming = false
     /// Chosen engine id: "apple" or a local model's id. Persisted.
     @Published var modelId: String { didSet { UserDefaults.standard.set(modelId, forKey: "aiChat.model") } }
@@ -62,10 +61,9 @@ final class ChatController: ObservableObject {
 
     func stop() { task?.cancel(); streaming = false }
 
-    func send() {
-        let text = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    func send(_ raw: String) {
+        let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !streaming, !modelId.isEmpty else { return }
-        input = ""
         messages.append(Msg(role: "user", text: text))
         messages.append(Msg(role: "assistant", text: ""))
         let idx = messages.count - 1
