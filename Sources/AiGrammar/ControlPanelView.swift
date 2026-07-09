@@ -361,13 +361,32 @@ private struct ModelRow: View {
                             .background(PanelTheme.accent.opacity(0.3), in: Capsule())
                     }
                 }
-                Text(model.sizeNote.isEmpty ? model.detail : "\(model.detail) · \(model.sizeNote)")
+                Text(subtitle)
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
             controls
         }
         .padding(.vertical, 4)
+        .task { models.prefetchRemoteMetadata(for: model) }   // fetch size+quant without downloading
+    }
+
+    /// Metadata read from the actual .gguf (on-disk, else a partial remote fetch).
+    private var parsed: (detail: String, sizeNote: String)? {
+        models.fileMetadata(for: model) ?? models.remoteMeta[model.id]
+    }
+
+    /// Built-in catalog models keep their curated detail (nicer: org + param count) but adopt the
+    /// real fetched size. User-added models show the full detail read from the file.
+    private var subtitle: String {
+        if model.builtIn {
+            let size = (parsed?.sizeNote).flatMap { $0.isEmpty ? nil : $0 } ?? model.sizeNote
+            return size.isEmpty ? model.detail : "\(model.detail) · \(size)"
+        }
+        if let m = parsed, !(m.detail.isEmpty && m.sizeNote.isEmpty) {
+            return m.sizeNote.isEmpty ? m.detail : "\(m.detail) · \(m.sizeNote)"
+        }
+        return model.sizeNote.isEmpty ? model.detail : "\(model.detail) · \(model.sizeNote)"
     }
 
     @ViewBuilder private var controls: some View {

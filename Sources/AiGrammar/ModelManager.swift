@@ -183,6 +183,79 @@ final class ModelManager: NSObject, ObservableObject {
         allModels.filter { path(forID: $0.id) != nil }
     }
 
+    // MARK: Model metadata (read from the .gguf header)
+
+    /// Parsed detail/size cache for on-disk files, keyed by absolute path.
+    private var fileMetaCache: [String: (detail: String, sizeNote: String)] = [:]
+    /// Remote (pre-download) metadata fetched via a partial download, keyed by model id.
+    @Published private(set) var remoteMeta: [String: (detail: String, sizeNote: String)] = [:]
+    private var remoteMetaInFlight: Set<String> = []
+
+    /// Detail + size read from a model's `.gguf` header, for a model whose file is on disk. Nil if
+    /// not present or not a readable gguf. Cached per path.
+    func fileMetadata(for model: ModelInfo) -> (detail: String, sizeNote: String)? {
+        guard let path = path(forID: model.id) else { return nil }
+        if let cached = fileMetaCache[path] { return cached }
+        guard let info = GGUFMetadata.parse(fileAt: path) else { return nil }
+        let detail = GGUFMetadata.detailString(info)
+        let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int
+        let sizeNote = size.map { Self.sizeString($0) } ?? ""
+        guard !detail.isEmpty || !sizeNote.isEmpty else { return nil }
+        let result = (detail: detail, sizeNote: sizeNote)
+        fileMetaCache[path] = result
+        return result
+    }
+
+    static func sizeString(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
+    }
+
+    /// Fetch a remote model's header + total size via ONE HTTP Range request — no full download.
+    /// Publishes into `remoteMeta` so rows update live. Runs at most once per id; skipped for
+    /// local-path models and models already on disk.
+    func prefetchRemoteMetadata(for model: ModelInfo) {
+        guard case .remote = model.source, let url = model.directDownloadURL,
+              remoteMeta[model.id] == nil, !remoteMetaInFlight.contains(model.id),
+              path(forID: model.id) == nil else { return }
+        remoteMetaInFlight.insert(model.id)
+        let id = model.id
+        Task { [weak self] in
+            let result = await Self.fetchRemoteMetadata(url: url)
+            await MainActor.run {
+                guard let self else { return }
+                self.remoteMetaInFlight.remove(id)
+                if let result { self.remoteMeta[id] = result }
+            }
+        }
+    }
+
+    private static func fetchRemoteMetadata(url: URL) async -> (detail: String, sizeNote: String)? {
+        var req = URLRequest(url: url)
+        // Enough to include general.file_type, which can sit past the tokenizer arrays (~6 MB in).
+        req.setValue("bytes=0-8388607", forHTTPHeaderField: "Range")   // first 8 MB
+        req.timeoutInterval = 20
+        do {
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            guard let http = resp as? HTTPURLResponse else { return nil }
+            // Total size: Content-Range "bytes 0-…/<total>" on a 206, else Content-Length on a 200.
+            var total: Int?
+            if let cr = http.value(forHTTPHeaderField: "Content-Range"), let slash = cr.lastIndex(of: "/") {
+                total = Int(cr[cr.index(after: slash)...].trimmingCharacters(in: .whitespaces))
+            }
+            if total == nil, http.statusCode == 200,
+               let cl = http.value(forHTTPHeaderField: "Content-Length") {
+                total = Int(cl)
+            }
+            let sizeNote = total.map { sizeString($0) } ?? ""
+            let detail = GGUFMetadata.parse(data).map { GGUFMetadata.detailString($0) } ?? ""
+            guard !detail.isEmpty || !sizeNote.isEmpty else { return nil }
+            return (detail, sizeNote)
+        } catch {
+            Log.write("model metadata prefetch failed: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
     // MARK: Persistence
 
     private struct Persisted: Codable {
