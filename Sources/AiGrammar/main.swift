@@ -7,12 +7,12 @@ import SwiftUI
 let app = NSApplication.shared
 let delegate = AppDelegate()
 app.delegate = delegate
-app.setActivationPolicy(.accessory)  // menu-bar only, no Dock icon
+app.setActivationPolicy(.regular)  // real app window + Dock icon (plus the menu-bar item)
 app.run()
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
-    var debugPanel: NSPanel!
+    let panelRouter = PanelRouter()
 
     let settings = Settings()
     let monitor = FocusMonitor()
@@ -67,7 +67,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupMainMenu()
         setupMenuBar()
         setupControlWindow()
-        setupDebugPanel()
         showControlWindow()
 
         // Global shortcuts (all ⌃⌘): C check · R rewrite · 1–4 rewrite presets · H help.
@@ -120,6 +119,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         aiSpellChecker.shutdown()     // stop the spell-check server too
     }
 
+    /// Clicking the Dock icon (or reopening) brings the control window back instead of doing nothing.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        showControlWindow()
+        return true
+    }
+
+    /// Closing the window keeps the app alive (menu-bar item stays); it does not quit.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+
     // Menu-triggered: opening the menu bar backgrounds Slack, so its composer reads go stale.
     // Re-activate Slack first, then check against the live composer. (The ⌃⌘C shortcut doesn't
     // need this — pressing it leaves Slack focused.)
@@ -156,7 +164,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         controlWindow.contentView = NSHostingView(
             rootView: ControlPanelView(
                 settings: settings, monitor: monitor, models: models,
-                prompts: prompts, params: inferenceParams))
+                prompts: prompts, params: inferenceParams, router: panelRouter))
         controlWindow.center()
     }
 
@@ -286,7 +294,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         add(
             "Launch at Login", #selector(toggleLaunchAtLogin),
             state: LaunchAtLogin.isEnabled ? .on : .off)
-        add("AX Debug Panel", #selector(toggleDebugPanel))
+        add("Diagnostics…", #selector(showDiagnostics))
         menu.addItem(.separator())
 
         add("Quit AiGrammar", #selector(NSApplication.terminate(_:))).target = nil
@@ -324,26 +332,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: Debug panel
 
-    private func setupDebugPanel() {
-        debugPanel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 640),
-            styleMask: [.titled, .closable, .resizable, .nonactivatingPanel, .utilityWindow],
-            backing: .buffered, defer: false)
-        debugPanel.title = "AiGrammar — AX Debug"
-        debugPanel.isFloatingPanel = true
-        debugPanel.level = .floating
-        debugPanel.isReleasedWhenClosed = false
-        debugPanel.hidesOnDeactivate = false
-        debugPanel.contentView = NSHostingView(rootView: DebugPanelView(monitor: monitor))
-    }
-
-    @objc private func toggleDebugPanel() {
-        if debugPanel.isVisible {
-            debugPanel.orderOut(nil)
-        } else {
-            debugPanel.center()
-            debugPanel.orderFront(nil)
-        }
+    @objc private func showDiagnostics() {
+        panelRouter.route = .diagnostics
+        showControlWindow()
     }
 
     // MARK: Engine self-test

@@ -7,11 +7,12 @@ struct ControlPanelView: View {
     @ObservedObject var models: ModelManager
     @ObservedObject var prompts: PromptStore
     @ObservedObject var params: InferenceParams
-    @State private var route: PanelRoute = .dashboard
+    @ObservedObject var router: PanelRouter
+    private var route: PanelRoute { router.route }
 
     var body: some View {
         HStack(spacing: 0) {
-            SidebarView(route: $route).frame(width: 200)
+            SidebarView(route: $router.route).frame(width: 200)
             Divider().overlay(PanelTheme.border)
             VStack(spacing: 0) {
                 HStack {
@@ -39,7 +40,7 @@ struct ControlPanelView: View {
         case .dashboard: DashboardPage(settings: settings, monitor: monitor, models: models)
         case .aiModels: AIModelsPage(models: models, settings: settings)
         case .settings: SettingsPage(settings: settings, prompts: prompts, params: params)
-        case .diagnostics: DiagnosticsPage(monitor: monitor)
+        case .diagnostics: DiagnosticsPage(monitor: monitor, models: models)
         }
     }
 
@@ -546,6 +547,17 @@ private struct SettingsPage: View {
 
 private struct DiagnosticsPage: View {
     @ObservedObject var monitor: FocusMonitor
+    @ObservedObject var models: ModelManager
+    @ObservedObject private var aiLog = AIDebugLog.shared
+
+    // Per-channel log toggles (default on; General is always on). Log reads these same keys.
+    @AppStorage("log.focus") private var logFocus = true
+    @AppStorage("log.pipeline") private var logPipeline = true
+    @AppStorage("log.rewrite") private var logRewrite = true
+    @AppStorage("log.spell") private var logSpell = true
+    @AppStorage("log.llama") private var logLlama = true
+    @AppStorage("log.aiPayload") private var logAIPayload = true
+
     var body: some View {
         VStack(spacing: 14) {
             Card(title: "Accessibility", icon: "lock.shield") {
@@ -559,13 +571,61 @@ private struct DiagnosticsPage: View {
                 }
                 .font(.callout)
             }
+
+            Card(title: "Live AI stream", icon: "waveform") {
+                Text(aiLog.header).font(.caption).foregroundStyle(.secondary)
+                ScrollView {
+                    Text(aiLog.raw.isEmpty ? "(waiting for an AI call…)" : aiLog.raw)
+                        .font(.system(.caption, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(height: 150)
+                .padding(8)
+                .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+            }
+
+            Card(title: "Logging", icon: "doc.text.magnifyingglass") {
+                Text("Choose what gets written to the log. ‘AI prompts & responses’ logs the full prompt sent and the model's raw reply — the fastest way to see why spell check differs from rewrite.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Group {
+                    Toggle("Focus / Accessibility", isOn: $logFocus)
+                    Toggle("Spellcheck pipeline", isOn: $logPipeline)
+                    Toggle("AI rewrite", isOn: $logRewrite)
+                    Toggle("AI spell check", isOn: $logSpell)
+                    Toggle("Local model server", isOn: $logLlama)
+                    Toggle("AI prompts & responses (verbose)", isOn: $logAIPayload)
+                }
+                .font(.callout).toggleStyle(.checkbox)
+            }
+
             Card(title: "Focused element", icon: "cursorarrow.rays") {
                 let s = monitor.snapshot
-                LabeledContent("App", value: "\(s.appName)")
+                LabeledContent("App", value: "\(s.appName)  (\(s.bundleID))")
+                LabeledContent("Slack?", value: s.isSlack ? "yes" : "no")
                 LabeledContent("Role", value: s.role)
                 LabeledContent("Capabilities", value: s.caps.summary)
+                LabeledContent("AX changes", value: "\(monitor.observedChangeCount)")
             }
-            Card(title: "Log", icon: "doc.text") {
+
+            Card(title: "Write test", icon: "pencil.and.outline") {
+                Text("Click into Slack's message box, type something, then run the test. It appends a marker, verifies it, and restores your text.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button("Run write test") { monitor.runWriteTest() }
+                        .disabled(monitor.lastSlackElement == nil)
+                    Button("Run read diagnostic") { monitor.runReadDiagnostic() }
+                        .disabled(monitor.lastSlackElement == nil)
+                }
+                .controlSize(.small)
+                ForEach(Array(monitor.log.suffix(8).enumerated()), id: \.offset) { _, line in
+                    Text(line).font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.secondary).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+            }
+
+            Card(title: "Log file", icon: "doc.text") {
                 HStack {
                     Text(Log.fileURL.path).font(.system(.caption, design: .monospaced))
                         .textSelection(.enabled).lineLimit(1).truncationMode(.middle)

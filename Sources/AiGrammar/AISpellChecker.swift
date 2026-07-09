@@ -48,6 +48,8 @@ final class AISpellChecker {
             Log.write("[aispell] no model for id \(modelId)")
             return []
         }
+        // Superseded by a newer check (the user typed on) — drop it silently, don't touch the badge.
+        if Task.isCancelled { return [] }
         let issues = locate(errors, in: text)
         Log.write("[aispell] \(issues.count) issue(s) from \(errors.count) reported")
         return issues
@@ -113,6 +115,8 @@ final class AISpellChecker {
             return parse(content)
         } catch is CancellationError {
             return []
+        } catch let e as URLError where e.code == .cancelled {
+            return []   // superseded by a newer check — expected while typing, not an error
         } catch {
             Log.write("[aispell] local error: \(error.localizedDescription)")
             return []

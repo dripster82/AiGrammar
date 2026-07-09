@@ -11,6 +11,12 @@ enum PanelTheme {
     static let cardCorner: CGFloat = 14
 }
 
+/// Holds the selected control-panel page so it can be driven from outside the view (e.g. the menu
+/// bar opening the window straight onto Diagnostics).
+final class PanelRouter: ObservableObject {
+    @Published var route: PanelRoute = .dashboard
+}
+
 enum PanelRoute: String, CaseIterable, Identifiable {
     case dashboard, aiModels, settings, diagnostics
     var id: String { rawValue }

@@ -102,6 +102,7 @@ final class ComposerPipeline {
         aiTask = Task { [weak self] in
             guard let self else { return }
             let issues = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel)
+            if Task.isCancelled { return }   // superseded — don't overwrite newer results
             await MainActor.run {
                 // Only apply if the composer still holds exactly what we checked.
                 guard let el = self.monitor.lastSlackElement,
