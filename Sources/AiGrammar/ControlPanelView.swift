@@ -43,10 +43,9 @@ struct ControlPanelView: View {
     @ViewBuilder private var detail: some View {
         switch route {
         case .dashboard: DashboardPage(settings: settings, monitor: monitor, models: models)
-        case .aiModels: AIModelsPage(models: models, settings: settings)
         case .chat: ChatPage(chat: chat, models: models)
         case .aiSpell: AISpellPage(settings: settings, models: models)
-        case .settings: SettingsPage(settings: settings, prompts: prompts, params: params)
+        case .settings: SettingsPage(settings: settings, models: models, prompts: prompts, params: params)
         case .diagnostics: DiagnosticsPage(monitor: monitor, models: models)
         }
     }
@@ -55,11 +54,10 @@ struct ControlPanelView: View {
         HStack(spacing: 6) {
             Circle().fill(monitor.trusted ? .green : .orange).frame(width: 6, height: 6)
             Text("AiGrammar")
-            Text("·").foregroundStyle(.tertiary)
+            Spacer()
             Text("build \(BuildInfo.version)")
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
-            Spacer()
         }
         .font(.caption2)
         .foregroundStyle(.secondary)
@@ -87,6 +85,7 @@ private struct DashboardPage: View {
                 statusRow("Rewrite engine",
                           RewriteEngineChoice.resolve(settings.rewriteEngineChoice, models: models).displayName,
                           ok: true, action: nil)
+                statusRow("AI spell check", aiSpellStatus, ok: settings.aiSpellEnabled, action: nil)
             }
             Card(title: "Corrections", icon: "checkmark.circle") {
                 Toggle("Autocorrect high-confidence typos", isOn: $settings.autocorrectEnabled)
@@ -97,6 +96,17 @@ private struct DashboardPage: View {
                     .font(.callout).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// "Disabled", "No model chosen", or the model name (+ auto/on-demand mode).
+    private var aiSpellStatus: String {
+        guard settings.aiSpellEnabled else { return "Disabled" }
+        let id = settings.aiSpellModel
+        guard !id.isEmpty else { return "Enabled · no model chosen" }
+        let name = id == "apple"
+            ? "Apple on-device"
+            : (models.allModels.first { $0.id == id }?.name ?? id)
+        return "\(name) · \(settings.aiSpellAuto ? "auto" : "on-demand")"
     }
 
     private func statusRow(_ label: String, _ value: String, ok: Bool,
@@ -407,15 +417,17 @@ private struct ModelRow: View {
 
 private struct SettingsPage: View {
     @ObservedObject var settings: Settings
+    @ObservedObject var models: ModelManager
     @ObservedObject var prompts: PromptStore
     @ObservedObject var params: InferenceParams
-    @State private var tab: SettingsTab = .corrections
+    @State private var tab: SettingsTab = .models
 
     enum SettingsTab: String, CaseIterable, Identifiable {
-        case corrections, prompts, parameters, shortcuts, about
+        case models, corrections, prompts, parameters, shortcuts, about
         var id: String { rawValue }
         var label: String {
             switch self {
+            case .models: return "AI Models"
             case .corrections: return "Corrections"
             case .prompts: return "AI Prompts"
             case .parameters: return "Parameters"
@@ -433,6 +445,7 @@ private struct SettingsPage: View {
             .pickerStyle(.segmented).labelsHidden()
 
             switch tab {
+            case .models: AIModelsPage(models: models, settings: settings)
             case .corrections: correctionsCard
             case .prompts: promptsCard
             case .parameters: parametersCard
@@ -732,7 +745,11 @@ private struct DiagnosticsPage: View {
     @AppStorage("log.rewrite") private var logRewrite = true
     @AppStorage("log.spell") private var logSpell = true
     @AppStorage("log.llama") private var logLlama = true
-    @AppStorage("log.aiPayload") private var logAIPayload = true
+    @AppStorage("log.aiPrompt") private var logAIPrompt = true
+    @AppStorage("log.aiResponse") private var logAIResponse = true
+
+    @State private var procs: [LlamaProc] = []
+    private let procTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
         VStack(spacing: 14) {
@@ -748,6 +765,8 @@ private struct DiagnosticsPage: View {
                 .font(.callout)
             }
 
+            runningModelsCard
+
             Card(title: "Live AI stream", icon: "waveform") {
                 Text(aiLog.header).font(.caption).foregroundStyle(.secondary)
                 ScrollView {
@@ -762,7 +781,7 @@ private struct DiagnosticsPage: View {
             }
 
             Card(title: "Logging", icon: "doc.text.magnifyingglass") {
-                Text("Choose what gets written to the log. ‘AI prompts & responses’ logs the full prompt sent and the model's raw reply — the fastest way to see why spell check differs from rewrite.")
+                Text("Choose what gets written to the log. AI prompts and responses are separate — turn off prompts to log just the model's raw reply.")
                     .font(.caption).foregroundStyle(.secondary)
                 Group {
                     Toggle("Focus / Accessibility", isOn: $logFocus)
@@ -770,7 +789,8 @@ private struct DiagnosticsPage: View {
                     Toggle("AI rewrite", isOn: $logRewrite)
                     Toggle("AI spell check", isOn: $logSpell)
                     Toggle("Local model server", isOn: $logLlama)
-                    Toggle("AI prompts & responses (verbose)", isOn: $logAIPayload)
+                    Toggle("AI prompts (verbose)", isOn: $logAIPrompt)
+                    Toggle("AI responses (verbose)", isOn: $logAIResponse)
                 }
                 .font(.callout).toggleStyle(.checkbox)
             }
@@ -802,15 +822,53 @@ private struct DiagnosticsPage: View {
             }
 
             Card(title: "Log file", icon: "doc.text") {
+                Text(Log.fileURL.path).font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 HStack {
-                    Text(Log.fileURL.path).font(.system(.caption, design: .monospaced))
-                        .textSelection(.enabled).lineLimit(1).truncationMode(.middle)
-                    Spacer()
-                    Button("Reveal") {
+                    Button("Show log") { NSWorkspace.shared.open(Log.fileURL) }
+                    Button("Reveal in Finder") {
                         NSWorkspace.shared.activateFileViewerSelecting([Log.fileURL])
-                    }.controlSize(.small)
+                    }
+                    Spacer()
+                    Button("Clear log", role: .destructive) { Log.clear() }
                 }
+                .controlSize(.small)
             }
+        }
+        .onAppear { refreshProcs() }
+        .onReceive(procTimer) { _ in refreshProcs() }
+    }
+
+    /// #2 — live CPU/RAM of the running local model servers (sampled via `ps`, off the main thread).
+    private var runningModelsCard: some View {
+        Card(title: "Running models", icon: "cpu") {
+            if procs.isEmpty {
+                Text("No local model server running.")
+                    .font(.callout).foregroundStyle(.secondary)
+            } else {
+                ForEach(procs) { p in
+                    HStack(spacing: 8) {
+                        Circle().fill(.green).frame(width: 7, height: 7)
+                        Text(p.model).font(.callout).lineLimit(1)
+                        Spacer()
+                        Text(String(format: "%.0f%% CPU", p.cpu))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        Text(String(format: "%.0f MB", p.memMB))
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                        Text("pid \(p.id)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                    }
+                }
+                Text("Each rewrite / spell-check / chat model runs its own llama-server. Change or disable models to free memory.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+    }
+
+    private func refreshProcs() {
+        DispatchQueue.global(qos: .utility).async {
+            let s = LlamaProcesses.sample()
+            DispatchQueue.main.async { procs = s }
         }
     }
 }

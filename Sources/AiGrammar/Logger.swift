@@ -7,7 +7,7 @@ enum Log {
     /// line's prefix (so existing call sites need no changes), or passed explicitly. `.general` is
     /// always on. Full AI prompts/responses are `.aiPayload` (verbose; explicit).
     enum Category: String, CaseIterable {
-        case general, focus, pipeline, rewrite, spell, llama, aiPayload
+        case general, focus, pipeline, rewrite, spell, llama, aiPrompt, aiResponse
 
         var label: String {
             switch self {
@@ -17,7 +17,8 @@ enum Log {
             case .rewrite: return "AI rewrite"
             case .spell: return "AI spell check"
             case .llama: return "Local model server"
-            case .aiPayload: return "AI prompts & responses (verbose)"
+            case .aiPrompt: return "AI prompts (verbose)"
+            case .aiResponse: return "AI responses (verbose)"
             }
         }
 
@@ -71,16 +72,19 @@ enum Log {
         }
     }
 
-    /// Log a full AI call — the prompt sent and the response received — under the `.aiPayload`
-    /// channel so it can be toggled separately (it's verbose). `engine` names the backend/model.
+    /// Log an AI call. The prompt and the response go to SEPARATE channels so you can log just the
+    /// response when the prompt is noise. `engine` names the backend/model.
     static func ai(engine: String, prompt: String, response: String) {
-        write("""
-            ── AI call · \(engine) ──
-            PROMPT:
-            \(prompt)
-            RESPONSE:
-            \(response)
-            ── end ──
-            """, category: .aiPayload)
+        write("── AI PROMPT · \(engine) ──\n\(prompt)\n── end prompt ──", category: .aiPrompt)
+        write("── AI RESPONSE · \(engine) ──\n\(response)\n── end response ──", category: .aiResponse)
+    }
+
+    /// Empty the log file (from the Diagnostics "Clear log" button).
+    static func clear() {
+        queue.async {
+            try? Data().write(to: fileURL)
+            let text = "[\(stamp.string(from: Date()))] log cleared\n"
+            if let data = text.data(using: .utf8) { try? data.write(to: fileURL) }
+        }
     }
 }

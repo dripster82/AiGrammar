@@ -18,13 +18,12 @@ final class PanelRouter: ObservableObject {
 }
 
 enum PanelRoute: String, CaseIterable, Identifiable {
-    case dashboard, aiModels, chat, aiSpell, settings, diagnostics
+    case dashboard, chat, aiSpell, settings, diagnostics
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .dashboard: return "Dashboard"
-        case .aiModels: return "AI Models"
         case .chat: return "Chat with AI Model"
         case .aiSpell: return "AI Spell Check"
         case .settings: return "Settings"
@@ -34,17 +33,15 @@ enum PanelRoute: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .dashboard: return "Status and quick actions"
-        case .aiModels: return "Local models for sentence rewriting"
         case .chat: return "Talk directly to a local model"
         case .aiSpell: return "Model-based, context-aware spell checking"
-        case .settings: return "Spellcheck and correction preferences"
+        case .settings: return "Models, prompts, parameters, and preferences"
         case .diagnostics: return "Accessibility, capabilities, and logs"
         }
     }
     var icon: String {
         switch self {
         case .dashboard: return "square.grid.2x2"
-        case .aiModels: return "brain"
         case .chat: return "bubble.left.and.bubble.right"
         case .aiSpell: return "text.magnifyingglass"
         case .settings: return "gearshape"
@@ -71,10 +68,9 @@ struct SidebarView: View {
             .padding(.horizontal, 16).padding(.top, 18).padding(.bottom, 14)
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 2) {
-                    ForEach(PanelRoute.allCases) { r in
-                        NavRow(route: r, selected: route == r) { route = r }
-                    }
+                VStack(alignment: .leading, spacing: 14) {
+                    group("MAIN", [.dashboard, .chat, .aiSpell])
+                    group("SYSTEM", [.settings, .diagnostics])
                 }
                 .padding(.horizontal, 10)
             }
@@ -82,6 +78,15 @@ struct SidebarView: View {
         }
         .frame(maxHeight: .infinity, alignment: .top)
         .background(PanelTheme.sidebar)
+    }
+
+    private func group(_ title: String, _ routes: [PanelRoute]) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+                .padding(.horizontal, 10).padding(.bottom, 2)
+            ForEach(routes) { r in NavRow(route: r, selected: route == r) { route = r } }
+        }
     }
 }
 
