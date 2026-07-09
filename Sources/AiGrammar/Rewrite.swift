@@ -105,6 +105,9 @@ final class RewriteController {
         popover.show(
             original: target, range: nsRange, element: element,
             engineName: effectiveEngineName, isCleanup: isCleanupEngine,
+            engineChoices: RewriteEngineChoice.available(models: models),
+            currentEngineId: RewriteEngineChoice.resolve(settings.rewriteEngineChoice, models: models).id,
+            setEngine: { [weak self] id in self?.settings.rewriteEngineChoice = id },
             at: bounds, autoRun: preset,
             makeStream: { [weak self] instruction in
                 guard let self else { return AsyncStream { $0.finish() } }
@@ -163,6 +166,25 @@ enum RewriteEngineChoice: Equatable {
         case .cleanup: return "Built-in cleanup (no model)"
         case .local(let m): return "\(m.name) · llama.cpp"
         }
+    }
+
+    /// The value stored in `settings.rewriteEngineChoice` for this engine.
+    var id: String {
+        switch self {
+        case .apple: return "apple"
+        case .cleanup: return "cleanup"
+        case .local(let m): return m.id
+        }
+    }
+
+    /// Every engine the user can switch to right now — for the in-popover model switcher. Apple
+    /// first, then each ready local model, then the no-model cleanup fallback.
+    static func available(models: ModelManager) -> [RewriteEngineChoice] {
+        var out: [RewriteEngineChoice] = []
+        if appleAvailable() { out.append(.apple) }
+        if LlamaServer.isInstalled { out.append(contentsOf: models.readyLocalModels.map(RewriteEngineChoice.local)) }
+        out.append(.cleanup)
+        return out
     }
 
     static func appleAvailable() -> Bool {
@@ -334,7 +356,9 @@ final class RewritePopoverController {
 
     func show(
         original: String, range: NSRange, element: AXUIElement, engineName: String,
-        isCleanup: Bool = false, at rect: CGRect?, autoRun: RewriteInstruction? = nil,
+        isCleanup: Bool = false, engineChoices: [RewriteEngineChoice] = [],
+        currentEngineId: String = "", setEngine: @escaping (String) -> Void = { _ in },
+        at rect: CGRect?, autoRun: RewriteInstruction? = nil,
         makeStream: @escaping (RewriteInstruction) -> AsyncStream<String>
     ) {
         hide(reason: "new rewrite requested")
@@ -345,7 +369,9 @@ final class RewritePopoverController {
         streamingCancellable = session.$streaming
             .sink { [weak self] streaming in if streaming { self?.hasBeenClicked = false } }
         let view = RewriteView(
-            session: session, engineName: engineName, isCleanup: isCleanup, autoRun: autoRun,
+            session: session, engineName: engineName, engineChoices: engineChoices,
+            currentEngineId: currentEngineId, setEngine: setEngine,
+            isCleanup: isCleanup, autoRun: autoRun,
             accept: { [weak self] text in
                 self?.onAccept?(range, element, text)
                 self?.hide(reason: "accepted")
@@ -451,11 +477,31 @@ final class RewritePopoverController {
 struct RewriteView: View {
     @ObservedObject var session: RewriteSession
     let engineName: String
+    let engineChoices: [RewriteEngineChoice]
+    let setEngine: (String) -> Void
     var isCleanup: Bool = false
     var autoRun: RewriteInstruction? = nil
     let accept: (String) -> Void
     let close: () -> Void
     @State private var customText = ""
+    @State private var engineId: String
+
+    init(
+        session: RewriteSession, engineName: String, engineChoices: [RewriteEngineChoice] = [],
+        currentEngineId: String = "", setEngine: @escaping (String) -> Void = { _ in },
+        isCleanup: Bool = false, autoRun: RewriteInstruction? = nil,
+        accept: @escaping (String) -> Void, close: @escaping () -> Void
+    ) {
+        self.session = session
+        self.engineName = engineName
+        self.engineChoices = engineChoices
+        self.setEngine = setEngine
+        self.isCleanup = isCleanup
+        self.autoRun = autoRun
+        self.accept = accept
+        self.close = close
+        _engineId = State(initialValue: currentEngineId)
+    }
 
     var body: some View {
         content
@@ -483,12 +529,55 @@ struct RewriteView: View {
                 resultView
             }
 
-            Text(engineName).font(.caption2).foregroundStyle(.tertiary)
+            enginePicker
         }
         .padding(12)
         .frame(width: 320, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))
+    }
+
+    private var currentEngineName: String {
+        engineChoices.first(where: { $0.id == engineId })?.displayName ?? engineName
+    }
+
+    /// Footer model switcher — pick a different engine/model without leaving the popover. Switching
+    /// while a result is showing regenerates it with the newly-chosen engine.
+    @ViewBuilder private var enginePicker: some View {
+        if engineChoices.count > 1 {
+            Menu {
+                ForEach(engineChoices, id: \.id) { choice in
+                    Button { selectEngine(choice.id) } label: {
+                        if choice.id == engineId {
+                            Label(choice.displayName, systemImage: "checkmark")
+                        } else {
+                            Text(choice.displayName)
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "cpu")
+                    Text(currentEngineName).lineLimit(1)
+                    Image(systemName: "chevron.up.chevron.down").font(.system(size: 8))
+                }
+                .font(.caption2).foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton)
+            .fixedSize()
+            .disabled(session.streaming)
+            .help("Switch the model used for this rewrite")
+        } else {
+            Text(currentEngineName).font(.caption2).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func selectEngine(_ id: String) {
+        guard id != engineId else { return }
+        engineId = id
+        setEngine(id)  // persist as the default engine too
+        // If a rewrite is already on screen, re-run it through the newly-chosen engine.
+        if let chosen = session.chosen { session.run(chosen) }
     }
 
     /// Shown when no AI model is selected — the heuristic can only tidy, not rewrite, so offer one
@@ -602,6 +691,11 @@ struct RewriteView: View {
                 Button("Cancel", action: close).buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("Stop generating and discard")
             } else {
+                Button { if let c = session.chosen { session.run(c) } } label: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help("Regenerate — run this rewrite again")
                 Button("Reject", action: close).buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("Discard and keep your original text")
                 Button("Accept") { accept(session.output) }
