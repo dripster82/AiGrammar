@@ -46,6 +46,8 @@ final class ComposerPipeline {
         monitor.onComposerValueChanged = { [weak self] in self?.scheduleProcess() }
         monitor.onComposerUnfocused = { [weak self] in
             self?.endReview()
+            self?.aiIssues = []            // don't carry stale AI results to another composer
+            self?.aiIssuesText = ""
             self?.onDismissUI?()
             self?.onIssueCount?(0)
         }
@@ -116,19 +118,58 @@ final class ComposerPipeline {
         }
     }
 
-    /// AI issues take precedence, plus any dictionary issues that don't overlap one (only while the
-    /// AI results still match the current text). Minus ignored words, left-to-right.
+    /// AI issues take precedence, plus any dictionary issues that don't overlap one. The AI words are
+    /// RE-LOCATED against the current text every call, so applying one correction (which changes the
+    /// text) doesn't discard the remaining AI suggestions — a fixed word just stops being found.
     private func mergedIssues(in text: String) -> [SpellIssue] {
+        var claimed: [NSRange] = []
         // AI first so its context-aware suggestion wins over the dictionary's context-free guess
         // for the same word (e.g. AI "wong→wrong" beats dictionary "wong→song").
-        var all = (text == aiIssuesText) ? aiIssues : []
-        for d in spell.issues(in: text) where !all.contains(where: {
-            NSIntersectionRange($0.range, d.range).length > 0
+        var all = relocate(aiIssues, in: text, claimed: &claimed)
+        for d in spell.issues(in: text) where !claimed.contains(where: {
+            NSIntersectionRange($0, d.range).length > 0
         }) {
             all.append(d)
+            claimed.append(d.range)
         }
         return all.filter { !ignored.contains($0.word.lowercased()) }
                   .sorted { $0.range.location < $1.range.location }
+    }
+
+    /// Find each cached AI issue's word/span in the current text (whole-word, non-overlapping), so
+    /// its suggestion survives edits made earlier in the same review.
+    private func relocate(_ issues: [SpellIssue], in text: String, claimed: inout [NSRange]) -> [SpellIssue] {
+        let ns = text as NSString
+        var out: [SpellIssue] = []
+        for issue in issues {
+            var from = 0
+            while from <= ns.length {
+                let found = ns.range(of: issue.word, options: [],
+                                     range: NSRange(location: from, length: ns.length - from))
+                if found.location == NSNotFound { break }
+                if !claimed.contains(where: { NSIntersectionRange($0, found).length > 0 }),
+                   isWholeWord(found, in: ns) {
+                    claimed.append(found)
+                    out.append(SpellIssue(range: found, word: issue.word,
+                                          guesses: issue.guesses, disposition: .suggest))
+                    break
+                }
+                from = found.location + max(found.length, 1)
+            }
+        }
+        return out
+    }
+
+    private func isWholeWord(_ range: NSRange, in ns: NSString) -> Bool {
+        let letters = CharacterSet.alphanumerics
+        if range.location > 0,
+           ns.substring(with: NSRange(location: range.location - 1, length: 1))
+            .rangeOfCharacter(from: letters) != nil { return false }
+        let end = range.location + range.length
+        if end < ns.length,
+           ns.substring(with: NSRange(location: end, length: 1))
+            .rangeOfCharacter(from: letters) != nil { return false }
+        return true
     }
 
     private func suppress(_ seconds: TimeInterval = 0.6) {
