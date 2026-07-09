@@ -33,6 +33,11 @@ final class Settings: ObservableObject {
     @Published var aiSpellDelayMs: Int {
         didSet { UserDefaults.standard.set(aiSpellDelayMs, forKey: "aiSpell.delayMs") }
     }
+    /// Reasoning effort for spell check: "none" (fastest, default) | "low" | "medium" | "high".
+    /// "none" launches the local server with --reasoning off; use "low" if the model can't disable it.
+    @Published var aiSpellReasoning: String {
+        didSet { UserDefaults.standard.set(aiSpellReasoning, forKey: "aiSpell.reasoning") }
+    }
 
     init() {
         let d = UserDefaults.standard
@@ -43,5 +48,6 @@ final class Settings: ObservableObject {
         aiSpellModel = d.string(forKey: "aiSpell.model") ?? ""
         aiSpellCadence = d.string(forKey: "aiSpell.cadence") ?? "delayed"
         aiSpellDelayMs = d.object(forKey: "aiSpell.delayMs") as? Int ?? 700
+        aiSpellReasoning = d.string(forKey: "aiSpell.reasoning") ?? "none"
     }
 }

@@ -165,6 +165,18 @@ private struct AISpellCheckCard: View {
                         Spacer()
                     }
                 }
+                HStack {
+                    Text("Reasoning").frame(width: 90, alignment: .leading)
+                    Picker("", selection: $settings.aiSpellReasoning) {
+                        Text("None").tag("none")
+                        Text("Low").tag("low")
+                        Text("Medium").tag("medium")
+                        Text("High").tag("high")
+                    }.labelsHidden().fixedSize()
+                    Spacer()
+                }
+                Text("Spell check only needs a JSON answer, so ‘None’ is fastest (launches the model with reasoning off). If your model can't disable reasoning, use ‘Low’.")
+                    .font(.caption2).foregroundStyle(.tertiary)
                 Text("Flagged words join the ⌃⌘C review list. Use ‘AI Auto-Correct Message’ in the menu to fix them all at once.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }

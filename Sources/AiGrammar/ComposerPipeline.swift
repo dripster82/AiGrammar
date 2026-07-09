@@ -103,7 +103,7 @@ final class ComposerPipeline {
         aiTask?.cancel()
         aiTask = Task { [weak self] in
             guard let self else { return }
-            let issues = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel)
+            let issues = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning)
             if Task.isCancelled { return }   // superseded — don't overwrite newer results
             await MainActor.run {
                 // Only apply if the composer still holds exactly what we checked.
@@ -219,7 +219,7 @@ final class ComposerPipeline {
                 aiTask?.cancel()
                 aiTask = Task { [weak self] in
                     guard let self else { return }
-                    let ai = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel)
+                    let ai = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning)
                     await MainActor.run {
                         if AX.string(element, kAXValueAttribute as String) == text {
                             self.aiIssues = ai; self.aiIssuesText = text
@@ -317,7 +317,7 @@ final class ComposerPipeline {
         Task { [weak self] in
             guard let self else { return }
             let ai = (self.settings.aiSpellEnabled && !self.settings.aiSpellModel.isEmpty)
-                ? await self.aiChecker.check(text, modelId: self.settings.aiSpellModel) : []
+                ? await self.aiChecker.check(text, modelId: self.settings.aiSpellModel, reasoning: self.settings.aiSpellReasoning) : []
             await MainActor.run { self.applyAllCorrections(ai: ai, element: element, text: text) }
         }
     }

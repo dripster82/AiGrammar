@@ -63,16 +63,17 @@ final class AISpellChecker {
         GOOD: {"errors":[{"word":"recieved","suggestions":["received"]}]}
         """
 
-    /// Check `text` with model id "apple" or a local model's id. Returns located issues, or [] on any
-    /// failure (never throws — spell check must not disrupt typing).
-    func check(_ text: String, modelId: String) async -> [SpellIssue] {
+    /// Check `text` with model id "apple" or a local model's id. `reasoning` is "none"/"low"/"medium"/
+    /// "high" (none = --reasoning off). Returns located issues, or [] on any failure (never throws —
+    /// spell check must not disrupt typing).
+    func check(_ text: String, modelId: String, reasoning: String = "none") async -> [SpellIssue] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.count >= 2 else { return [] }
         let errors: [AIError]
         if modelId == "apple" {
             errors = await checkApple(text)
         } else if let path = models.path(forID: modelId) {
-            errors = await checkLocal(text, modelPath: path)
+            errors = await checkLocal(text, modelPath: path, reasoning: reasoning)
         } else {
             Log.write("[aispell] no model for id \(modelId)")
             return []
@@ -86,11 +87,11 @@ final class AISpellChecker {
 
     // MARK: Local GGUF (llama-server, JSON-schema constrained)
 
-    private func checkLocal(_ text: String, modelPath: String) async -> [AIError] {
+    private func checkLocal(_ text: String, modelPath: String, reasoning: String) async -> [AIError] {
         let name = (modelPath as NSString).lastPathComponent
         do {
             AIDebugLog.shared.begin(engine: "spell · \(name)", instruction: "spellcheck")
-            try await server.ensureRunning(modelPath: modelPath, reasoningOff: true)
+            try await server.ensureRunning(modelPath: modelPath, reasoningOff: reasoning == "none")
             var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -112,7 +113,7 @@ final class AISpellChecker {
                 ],
                 "required": ["errors"],
             ]
-            let body: [String: Any] = [
+            var body: [String: Any] = [
                 "model": "local",
                 "stream": false,
                 "temperature": 0.1,
@@ -125,6 +126,9 @@ final class AISpellChecker {
                     "json_schema": ["name": "spellcheck", "strict": true, "schema": schema],
                 ],
             ]
+            // "none" is handled at server launch (--reasoning off); low/medium/high map to the
+            // request-level reasoning_effort for models that support it.
+            if ["low", "medium", "high"].contains(reasoning) { body["reasoning_effort"] = reasoning }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
             let (data, _) = try await URLSession.shared.data(for: request)
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
