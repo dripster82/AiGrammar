@@ -485,6 +485,9 @@ struct RewriteView: View {
     let close: () -> Void
     @State private var customText = ""
     @State private var engineId: String
+    /// Editable copy of the finished rewrite — seeded when generation completes, so the user can
+    /// tweak the text before accepting. `accept` uses this, not the raw stream.
+    @State private var editedText = ""
 
     init(
         session: RewriteSession, engineName: String, engineChoices: [RewriteEngineChoice] = [],
@@ -535,6 +538,10 @@ struct RewriteView: View {
         .frame(width: 320, alignment: .leading)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.quaternary))
+        // When a rewrite finishes, seed the editable copy with its final text.
+        .onChange(of: session.streaming) { _, isStreaming in
+            if !isStreaming { editedText = session.output }
+        }
     }
 
     private var currentEngineName: String {
@@ -660,28 +667,7 @@ struct RewriteView: View {
                 .help("Pick a different rewrite")
         }
 
-        ScrollView {
-            if session.output.isEmpty || session.output == "Thinking…" {
-                HStack(spacing: 6) {
-                    if session.streaming { ProgressView().controlSize(.small) }
-                    Text(
-                        session.output == "Thinking…"
-                            ? "Thinking…"
-                            : (session.streaming ? "Rewriting…" : "No output")
-                    )
-                    .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Text(session.output)
-                    .font(.callout)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .textSelection(.enabled)
-            }
-        }
-        .frame(height: 140)
-        .padding(8)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+        outputArea
 
         HStack(spacing: 10) {
             timerView
@@ -698,11 +684,51 @@ struct RewriteView: View {
                 .help("Regenerate — run this rewrite again")
                 Button("Reject", action: close).buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("Discard and keep your original text")
-                Button("Accept") { accept(session.output) }
+                Button("Accept") { accept(editedText) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(session.output.isEmpty)
-                    .help("Replace the selection with this rewrite")
+                    .disabled(editedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    .help("Replace the selection with this (edited) rewrite")
             }
+        }
+    }
+
+    /// The result area: a live read-only stream while generating, then an editable text box the user
+    /// can tweak before accepting.
+    @ViewBuilder private var outputArea: some View {
+        if !session.streaming && !session.output.isEmpty {
+            VStack(alignment: .leading, spacing: 2) {
+                TextEditor(text: $editedText)
+                    .font(.callout)
+                    .scrollContentBackground(.hidden)
+                    .frame(height: 132)
+                    .padding(6)
+                    .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
+                    .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
+                Text("Editable — tweak before accepting.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        } else {
+            ScrollView {
+                HStack(spacing: 6) {
+                    if session.streaming && (session.output.isEmpty || session.output == "Thinking…") {
+                        ProgressView().controlSize(.small)
+                    }
+                    if session.output.isEmpty || session.output == "Thinking…" {
+                        Text(
+                            session.output == "Thinking…"
+                                ? "Thinking…"
+                                : (session.streaming ? "Rewriting…" : "No output")
+                        )
+                        .foregroundStyle(.secondary)
+                    } else {
+                        Text(session.output).font(.callout).textSelection(.enabled)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(height: 140)
+            .padding(8)
+            .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 6))
         }
     }
 
