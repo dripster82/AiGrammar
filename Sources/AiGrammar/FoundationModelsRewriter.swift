@@ -42,7 +42,7 @@ final class FoundationModelsRewriter: RewriteEngine {
 
     func rewrite(_ text: String, instruction: RewriteInstruction, systemPrompt: String) -> AsyncStream<String> {
         AsyncStream { continuation in
-            Task {
+            let task = Task {
                 let session = LanguageModelSession(instructions: systemPrompt)
                 Log.write("[rewrite] Foundation model: \(instruction.id) on \(text.count) chars (temp \(params.temperature))")
                 do {
@@ -56,6 +56,7 @@ final class FoundationModelsRewriter: RewriteEngine {
                     AIDebugLog.shared.begin(engine: "Apple on-device", instruction: instruction.id)
                     var raw = ""
                     for try await partial in stream {
+                        if Task.isCancelled { break }   // Cancel button / focus-loss dismiss
                         raw = partial.content
                         AIDebugLog.shared.update(raw)   // live raw stream → debug panel
                         continuation.yield(RewriteText.display(raw))   // cumulative, de-preambled
@@ -63,12 +64,15 @@ final class FoundationModelsRewriter: RewriteEngine {
                     continuation.yield(RewriteText.finalDisplay(raw))   // never leave it on "Thinking…"
                     AIDebugLog.shared.finish(chars: raw.count)
                     Log.write("[rewrite] Apple raw response (\(raw.count) chars):\n\(raw)")
+                } catch is CancellationError {
+                    Log.write("[rewrite] Apple generation cancelled")
                 } catch {
                     Log.write("[rewrite] error: \(error.localizedDescription)")
                     continuation.yield("[rewrite failed: \(error.localizedDescription)]")
                 }
                 continuation.finish()
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 }

@@ -23,7 +23,7 @@ final class GGUFRewriter: RewriteEngine {
     func rewrite(_ text: String, instruction: RewriteInstruction,
                  systemPrompt: String) -> AsyncStream<String> {
         AsyncStream { continuation in
-            Task {
+            let task = Task {
                 do {
                     try await server.ensureRunning(modelPath: modelPath,
                                                    reasoningOff: params.reasoningEffort == "none")
@@ -42,6 +42,7 @@ final class GGUFRewriter: RewriteEngine {
                     let (bytes, _) = try await URLSession.shared.bytes(for: request)
                     var acc = ""
                     for try await line in bytes.lines {
+                        if Task.isCancelled { break }   // Cancel button / focus-loss dismiss
                         guard line.hasPrefix("data:") else { continue }
                         let payload = line.dropFirst(5).trimmingCharacters(in: .whitespaces)
                         if payload == "[DONE]" { break }
@@ -57,12 +58,20 @@ final class GGUFRewriter: RewriteEngine {
                     continuation.yield(RewriteText.finalDisplay(acc))   // never leave it on "Thinking…"
                     AIDebugLog.shared.finish(chars: acc.count)
                     Log.write("[rewrite] llama.cpp raw response (\(acc.count) chars):\n\(acc)")
+                } catch is CancellationError {
+                    Log.write("[rewrite] llama.cpp generation cancelled")
+                } catch let error as URLError where error.code == .cancelled {
+                    Log.write("[rewrite] llama.cpp generation cancelled")
                 } catch {
                     Log.write("[rewrite] llama.cpp error: \(error.localizedDescription)")
                     continuation.yield("[rewrite failed: \(error.localizedDescription)]")
                 }
                 continuation.finish()
             }
+            // When the consumer cancels (Cancel button, focus-loss dismiss), tear down the producer:
+            // cancelling the task aborts the URLSession request, which drops the socket to llama-server
+            // so it stops generating instead of running to completion in the background.
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 }
