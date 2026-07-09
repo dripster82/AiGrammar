@@ -9,21 +9,36 @@ final class LlamaServer {
     private(set) var port = 0
     private var loadedModelPath: String?
 
-    /// A pidfile records the running server so a crash/force-quit orphan can be killed on next launch.
-    private static var pidFileURL: URL {
-        ModelManager.modelsDirectory.deletingLastPathComponent().appendingPathComponent("llama-server.pid")
+    /// Distinguishes concurrent servers (e.g. the rewrite model and a separate AI-spellcheck model)
+    /// so each has its own pidfile and neither clobbers the other.
+    private let role: String
+    init(role: String = "rewrite") { self.role = role }
+
+    private static var supportDir: URL {
+        ModelManager.modelsDirectory.deletingLastPathComponent()
     }
 
-    /// Kill a llama-server left running by a previous session that didn't shut down cleanly (crash /
-    /// force-quit / SIGKILL). Verifies the pid is actually a llama-server before killing (pid reuse).
+    /// A pidfile records the running server so a crash/force-quit orphan can be killed on next launch.
+    private var pidFileURL: URL {
+        Self.supportDir.appendingPathComponent("llama-server-\(role).pid")
+    }
+
+    /// Kill any llama-server left running by a previous session that didn't shut down cleanly (crash /
+    /// force-quit / SIGKILL). Scans every role's pidfile. Verifies each pid is actually a llama-server
+    /// before killing (pid reuse).
     static func killStaleServer() {
-        guard let s = try? String(contentsOf: pidFileURL, encoding: .utf8),
-              let pid = Int32(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
-        if executablePath(pid)?.contains("llama-server") == true {
-            kill(pid, SIGKILL)
-            Log.write("[llama] killed stale server pid \(pid) from a previous session")
+        let fm = FileManager.default
+        let pidfiles = (try? fm.contentsOfDirectory(at: supportDir, includingPropertiesForKeys: nil))?
+            .filter { $0.lastPathComponent.hasPrefix("llama-server") && $0.pathExtension == "pid" } ?? []
+        for url in pidfiles {
+            defer { try? fm.removeItem(at: url) }
+            guard let s = try? String(contentsOf: url, encoding: .utf8),
+                  let pid = Int32(s.trimmingCharacters(in: .whitespacesAndNewlines)) else { continue }
+            if executablePath(pid)?.contains("llama-server") == true {
+                kill(pid, SIGKILL)
+                Log.write("[llama] killed stale server pid \(pid) (\(url.lastPathComponent)) from a previous session")
+            }
         }
-        try? FileManager.default.removeItem(at: pidFileURL)
     }
 
     private static func executablePath(_ pid: Int32) -> String? {
@@ -77,7 +92,7 @@ final class LlamaServer {
         port = chosenPort
         loadedModelPath = modelPath
         loadedReasoningOff = reasoningOff
-        try? "\(proc.processIdentifier)".write(to: Self.pidFileURL, atomically: true, encoding: .utf8)
+        try? "\(proc.processIdentifier)".write(to: pidFileURL, atomically: true, encoding: .utf8)
         Log.write("[llama] started llama-server pid \(proc.processIdentifier) on :\(chosenPort) for \((modelPath as NSString).lastPathComponent)\(reasoningOff ? " (reasoning off)" : "")")
         try await waitForHealth(timeout: 60)
         Log.write("[llama] server healthy on :\(chosenPort)")
@@ -111,7 +126,7 @@ final class LlamaServer {
             }
             Log.write("[llama] stopped server pid \(pid)")
         }
-        try? FileManager.default.removeItem(at: Self.pidFileURL)
+        try? FileManager.default.removeItem(at: pidFileURL)
         process = nil
         loadedModelPath = nil
         port = 0

@@ -19,7 +19,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let models = ModelManager()
     let prompts = PromptStore()
     let inferenceParams = InferenceParams()
-    lazy var pipeline = ComposerPipeline(monitor: monitor, settings: settings)
+    lazy var aiSpellChecker = AISpellChecker(models: models)
+    lazy var pipeline = ComposerPipeline(monitor: monitor, settings: settings, aiChecker: aiSpellChecker)
     let suggestionPopover = SuggestionPopoverController()
     let undoChip = UndoChipController()
     let issueIndicator = IssueCountIndicatorController()
@@ -41,7 +42,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Terminate doesn't run. (SIGKILL can't be caught — that's what killStaleServer covers.)
         signal(SIGTERM, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        src.setEventHandler { [weak self] in self?.rewriteController.shutdown(); NSApp.terminate(nil) }
+        src.setEventHandler { [weak self] in
+            self?.rewriteController.shutdown(); self?.aiSpellChecker.shutdown(); NSApp.terminate(nil)
+        }
         src.resume()
         sigterm = src
 
@@ -114,6 +117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         rewriteController.shutdown()  // stop any warm llama-server
+        aiSpellChecker.shutdown()     // stop the spell-check server too
     }
 
     // Menu-triggered: opening the menu bar backgrounds Slack, so its composer reads go stale.
@@ -125,6 +129,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             .first?.activate()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             self?.pipeline.checkNow()
+        }
+    }
+    @objc private func aiAutocorrect() {
+        NSRunningApplication.runningApplications(withBundleIdentifier: FocusMonitor.slackBundleID)
+            .first?.activate()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+            self?.pipeline.autocorrectSentenceWithAI()
         }
     }
     @objc private func rewriteSelection() {
@@ -257,6 +268,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         add("Check Spelling Now  (⌃⌘C)", #selector(checkNow))
+        if settings.aiSpellEnabled && !settings.aiSpellModel.isEmpty {
+            add("AI Auto-Correct Message", #selector(aiAutocorrect))
+        }
         add("Rewrite Selection  (⌃⌘R)", #selector(rewriteSelection))
         menu.addItem(.separator())
 

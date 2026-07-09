@@ -84,6 +84,7 @@ private struct DashboardPage: View {
                 Toggle("Autocorrect high-confidence typos", isOn: $settings.autocorrectEnabled)
                 Toggle("Show spelling suggestions", isOn: $settings.suggestionsEnabled)
             }
+            AISpellCheckCard(settings: settings, models: models)
             Card(title: "Privacy", icon: "lock.shield") {
                 Text("Everything runs on your Mac. Spelling uses the on-device dictionary; rewrites use a local model you download here. No message text is ever sent to a server.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -101,6 +102,66 @@ private struct DashboardPage: View {
             if let action { Button("Fix…", action: action).controlSize(.small) }
         }
         .font(.callout)
+    }
+}
+
+/// Model-based spell/word-choice checker settings: enable, which model, when it runs, and (for the
+/// delayed cadence) how long after you stop typing.
+private struct AISpellCheckCard: View {
+    @ObservedObject var settings: Settings
+    @ObservedObject var models: ModelManager
+
+    /// Engines that can back the checker: Apple on-device (if available) + each ready local model.
+    private var modelOptions: [(id: String, name: String)] {
+        var out: [(String, String)] = []
+        if RewriteEngineChoice.appleAvailable() { out.append(("apple", "Apple on-device")) }
+        if LlamaServer.isInstalled {
+            out.append(contentsOf: models.readyLocalModels.map { ($0.id, "\($0.name) (llama.cpp)") })
+        }
+        return out
+    }
+
+    var body: some View {
+        Card(title: "AI spell check", icon: "sparkle.magnifyingglass") {
+            Toggle("Context-aware AI spell check", isOn: $settings.aiSpellEnabled)
+            Text("Uses a model to catch real-word errors the dictionary misses (their/there, form/from). Supplements the instant dictionary check.")
+                .font(.caption).foregroundStyle(.secondary)
+
+            if settings.aiSpellEnabled {
+                if modelOptions.isEmpty {
+                    Text("No model available. Enable Apple Intelligence or download a local model in AI Models.")
+                        .font(.caption).foregroundStyle(.orange)
+                } else {
+                    HStack {
+                        Text("Model").frame(width: 90, alignment: .leading)
+                        Picker("", selection: $settings.aiSpellModel) {
+                            Text("Choose…").tag("")
+                            ForEach(modelOptions, id: \.id) { Text($0.name).tag($0.id) }
+                        }.labelsHidden()
+                    }
+                }
+                HStack {
+                    Text("Run").frame(width: 90, alignment: .leading)
+                    Picker("", selection: $settings.aiSpellCadence) {
+                        Text("After a pause").tag("delayed")
+                        Text("Every word").tag("perword")
+                        Text("On demand (⌃⌘C)").tag("ondemand")
+                    }.labelsHidden().fixedSize()
+                    Spacer()
+                }
+                if settings.aiSpellCadence == "delayed" {
+                    HStack {
+                        Text("Delay").frame(width: 90, alignment: .leading)
+                        TextField("", value: $settings.aiSpellDelayMs, format: .number)
+                            .frame(width: 70).textFieldStyle(.roundedBorder)
+                        Text("ms after you stop typing").font(.caption).foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                }
+                Text("Flagged words join the ⌃⌘C review list. Use ‘AI Auto-Correct Message’ in the menu to fix them all at once.")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
     }
 }
 

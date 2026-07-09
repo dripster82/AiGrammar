@@ -13,6 +13,7 @@ final class ComposerPipeline {
     private let monitor: FocusMonitor
     private let settings: Settings
     private let spell = SpellEngine()
+    private let aiChecker: AISpellChecker
 
     private var debounce: DispatchWorkItem?
     private var suppressUntil = Date.distantPast
@@ -20,6 +21,14 @@ final class ComposerPipeline {
     private var reviewSkipped = Set<String>()    // words skipped during the current review only
     private(set) var corrections: [Correction] = []
     private var reviewing = false                // stepping through issues from a manual ⌃⌘C check
+
+    // AI spell check (supplements the dictionary): async results cached against the text they came
+    // from, merged into the issue list only while the composer still holds that exact text.
+    private var aiDebounce: DispatchWorkItem?
+    private var aiTask: Task<Void, Never>?
+    private var aiIssues: [SpellIssue] = []
+    private var aiIssuesText = ""
+    private var lastText = ""                     // to detect a just-completed word for "perword"
 
     /// (issue, screen bounds of the word, composer element) — show a suggestion popover.
     var onSuggestion: ((SpellIssue, CGRect?) -> Void)?
@@ -30,9 +39,10 @@ final class ComposerPipeline {
     /// Number of outstanding spelling issues — drives the menu-bar count badge (red N / green ✓).
     var onIssueCount: ((Int) -> Void)?
 
-    init(monitor: FocusMonitor, settings: Settings) {
+    init(monitor: FocusMonitor, settings: Settings, aiChecker: AISpellChecker) {
         self.monitor = monitor
         self.settings = settings
+        self.aiChecker = aiChecker
         monitor.onComposerValueChanged = { [weak self] in self?.scheduleProcess() }
         monitor.onComposerUnfocused = { [weak self] in
             self?.endReview()
@@ -49,6 +59,75 @@ final class ComposerPipeline {
         let work = DispatchWorkItem { [weak self] in self?.process() }
         debounce = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+
+        // Schedule an AI check per its own cadence (independent of the fast dictionary debounce).
+        if settings.aiSpellEnabled, !settings.aiSpellModel.isEmpty,
+           let el = monitor.lastSlackElement,
+           let text = AX.string(el, kAXValueAttribute as String) {
+            let boundary = boundaryJustCompleted(old: lastText, new: text)
+            lastText = text
+            scheduleAICheck(text: text, boundaryCompleted: boundary)
+        }
+    }
+
+    /// True when the user just finished a word — the text grew and now ends in a space/punctuation.
+    private func boundaryJustCompleted(old: String, new: String) -> Bool {
+        guard new.count > old.count, let last = new.unicodeScalars.last else { return false }
+        return CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters).contains(last)
+    }
+
+    /// Kick an AI spell check on `text` according to the chosen cadence. On-demand does nothing here
+    /// (it runs from `checkNow`). Results merge into the badge/review when they return.
+    private func scheduleAICheck(text: String, boundaryCompleted: Bool) {
+        switch settings.aiSpellCadence {
+        case "ondemand":
+            return
+        case "perword":
+            guard boundaryCompleted else { return }
+            aiDebounce?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.runAICheck(text: text) }
+            aiDebounce = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
+        default:  // "delayed"
+            aiDebounce?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.runAICheck(text: text) }
+            aiDebounce = work
+            let delay = Double(max(200, settings.aiSpellDelayMs)) / 1000.0
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+        }
+    }
+
+    private func runAICheck(text: String) {
+        aiTask?.cancel()
+        aiTask = Task { [weak self] in
+            guard let self else { return }
+            let issues = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel)
+            await MainActor.run {
+                // Only apply if the composer still holds exactly what we checked.
+                guard let el = self.monitor.lastSlackElement,
+                      AX.string(el, kAXValueAttribute as String) == text else { return }
+                self.aiIssues = issues
+                self.aiIssuesText = text
+                let count = self.mergedIssues(in: text).count
+                self.onIssueCount?(self.settings.suggestionsEnabled ? count : 0)
+                if self.reviewing { self.showNextReviewIssue() }
+            }
+        }
+    }
+
+    /// Dictionary issues plus AI issues (only while the AI results still match the current text),
+    /// de-duplicated by overlapping range, minus ignored words, left-to-right.
+    private func mergedIssues(in text: String) -> [SpellIssue] {
+        var all = spell.issues(in: text)
+        if text == aiIssuesText {
+            for ai in aiIssues where !all.contains(where: {
+                NSIntersectionRange($0.range, ai.range).length > 0
+            }) {
+                all.append(ai)
+            }
+        }
+        return all.filter { !ignored.contains($0.word.lowercased()) }
+                  .sorted { $0.range.location < $1.range.location }
     }
 
     private func suppress(_ seconds: TimeInterval = 0.6) {
@@ -91,17 +170,30 @@ final class ComposerPipeline {
             onIssueCount?(0)
             onDismissUI?(); return
         }
-        let allIssues = spell.issues(in: text)
-        let issues = allIssues.filter { !ignored.contains($0.word.lowercased()) }
-
         if manual {
-            let words = issues.map { "\($0.word)→\($0.topGuess ?? "?")" }.joined(separator: ", ")
-            Log.write("[check] read \(text.count) chars; \(issues.count) issue(s)"
-                    + (allIssues.count != issues.count ? " (\(allIssues.count - issues.count) ignored)" : "")
-                    + (issues.isEmpty ? "" : ": \(words)"))
-            beginReview(element: element)   // step through each word with a popover
+            // On-demand: run the AI check first (if on), then step through the merged results.
+            if settings.aiSpellEnabled, !settings.aiSpellModel.isEmpty {
+                Log.write("[check] running AI spell check (\(settings.aiSpellModel))…")
+                aiTask?.cancel()
+                aiTask = Task { [weak self] in
+                    guard let self else { return }
+                    let ai = await self.aiChecker.check(text, modelId: self.settings.aiSpellModel)
+                    await MainActor.run {
+                        if AX.string(element, kAXValueAttribute as String) == text {
+                            self.aiIssues = ai; self.aiIssuesText = text
+                        }
+                        self.logManual(text: text)
+                        self.beginReview(element: element)
+                    }
+                }
+            } else {
+                logManual(text: text)
+                beginReview(element: element)   // step through each word with a popover
+            }
             return
         }
+
+        let issues = mergedIssues(in: text)
 
         // --- Live typing path: autocorrect the obvious, otherwise just update the count badge.
         // NO suggestion popovers while typing — the user reviews on demand with ⌃⌘C.
@@ -114,6 +206,13 @@ final class ComposerPipeline {
             return   // the resulting edit re-triggers process(), which refreshes the badge
         }
         onIssueCount?(settings.suggestionsEnabled ? issues.count : 0)
+    }
+
+    private func logManual(text: String) {
+        let issues = mergedIssues(in: text)
+        let words = issues.map { "\($0.word)→\($0.topGuess ?? "?")" }.joined(separator: ", ")
+        Log.write("[check] read \(text.count) chars; \(issues.count) issue(s)"
+                + (issues.isEmpty ? "" : ": \(words)"))
     }
 
     // MARK: Review session (⌃⌘C steps through each flagged word)
@@ -130,9 +229,8 @@ final class ComposerPipeline {
               let text = AX.string(element, kAXValueAttribute as String), !text.isEmpty else {
             endReview(); return
         }
-        let issues = spell.issues(in: text)
-            .filter { !ignored.contains($0.word.lowercased()) && !reviewSkipped.contains($0.word.lowercased()) }
-            .sorted { $0.range.location < $1.range.location }
+        let issues = mergedIssues(in: text)
+            .filter { !reviewSkipped.contains($0.word.lowercased()) }
         guard let issue = issues.first else {
             Log.write("[review] done — no more issues\(reviewSkipped.isEmpty ? "" : " (\(reviewSkipped.count) skipped)")")
             endReview(); return
@@ -160,8 +258,65 @@ final class ComposerPipeline {
         // Refresh the badge with whatever remains.
         if let element = monitor.lastSlackElement,
            let text = AX.string(element, kAXValueAttribute as String) {
-            let count = spell.issues(in: text).filter { !ignored.contains($0.word.lowercased()) }.count
-            onIssueCount?(count)
+            onIssueCount?(mergedIssues(in: text).count)
+        }
+    }
+
+    // MARK: Bulk AI auto-correct
+
+    /// Run an AI spell check on the whole message and apply the top suggestion for every flagged word
+    /// (AI + dictionary) in a single write, as one undoable change. Triggered from the menu.
+    func autocorrectSentenceWithAI() {
+        _ = monitor.acquireSlackComposer()
+        guard let element = monitor.lastSlackElement,
+              let text = AX.string(element, kAXValueAttribute as String), !text.isEmpty else {
+            Log.write("[aispell] auto-correct: no composer text"); onDismissUI?(); return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            let ai = (self.settings.aiSpellEnabled && !self.settings.aiSpellModel.isEmpty)
+                ? await self.aiChecker.check(text, modelId: self.settings.aiSpellModel) : []
+            await MainActor.run { self.applyAllCorrections(ai: ai, element: element, text: text) }
+        }
+    }
+
+    private func applyAllCorrections(ai aiIssues: [SpellIssue], element: AXUIElement, text: String) {
+        // AI issues first; add dictionary suggestions that don't overlap them.
+        var all = aiIssues
+        for d in spell.issues(in: text) where !all.contains(where: {
+            NSIntersectionRange($0.range, d.range).length > 0
+        }) { all.append(d) }
+        all = all.filter { !ignored.contains($0.word.lowercased()) && $0.topGuess != nil }
+                 .sorted { $0.range.location > $1.range.location }   // back-to-front keeps ranges valid
+        guard !all.isEmpty else { Log.write("[aispell] auto-correct: nothing to fix"); onDismissUI?(); return }
+
+        var working = text as NSString
+        var applied = 0
+        for issue in all {
+            guard issue.range.location + issue.range.length <= working.length,
+                  working.substring(with: issue.range) == issue.word,
+                  let rep = issue.topGuess else { continue }
+            working = working.replacingCharacters(in: issue.range, with: rep) as NSString
+            applied += 1
+        }
+        guard applied > 0 else { onDismissUI?(); return }
+
+        suppress()
+        guard AX.setValue(element, working as String) == .success else {
+            Log.write("[aispell] auto-correct: setValue rejected"); return
+        }
+        Log.write("[aispell] auto-corrected \(applied) word(s) in one pass")
+        // A single whole-message undo record so the user can revert the batch from the chip.
+        let record = Correction(
+            original: text, corrected: working as String,
+            rangeAfter: NSRange(location: 0, length: working.length),
+            contextBefore: "", contextAfter: "")
+        corrections.append(record)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self else { return }
+            let bounds = self.wordBounds(NSRange(location: 0, length: 1), element: element,
+                                         cursor: AX.range(element, kAXSelectedTextRangeAttribute as String))
+            self.onAutocorrect?(record, bounds)
         }
     }
 
