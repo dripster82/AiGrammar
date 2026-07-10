@@ -855,7 +855,7 @@ private struct DiagnosticsPage: View {
     private var healthCheckCard: some View {
         Card(title: "Health check", icon: "heart.text.square") {
             HStack {
-                Text("Checks permissions and sends each model a test prompt (expects “OK”). Loads the models, so it can take a moment.")
+                Text("Checks permissions and sends a test prompt (expects “OK”) to each model that's already running. Doesn't load or stop any models.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button {

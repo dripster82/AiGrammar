@@ -9,6 +9,7 @@ struct LlamaProc: Identifiable {
     let cpu: Double        // percent
     let memMB: Double      // resident size
     let uptimeSec: Int     // elapsed running time in seconds
+    let port: Int?         // localhost port (from --port), so we can ping the live server
     let modelPath: String? // full path from the -m argument (to look up the model's stored detail)
     let model: String      // gguf filename (fallback label)
     let role: String?      // "rewrite" | "spell" | "chat" (from the pidfile), else nil
@@ -57,6 +58,7 @@ enum LlamaProcesses {
             let mPath = modelPath(from: command)
             procs.append(LlamaProc(id: pid, cpu: cpu, memMB: rssKB / 1024.0,
                                    uptimeSec: parseEtime(String(parts[3])),
+                                   port: portArg(from: command),
                                    modelPath: mPath,
                                    model: mPath.map { ($0 as NSString).lastPathComponent } ?? "(unknown model)",
                                    role: roles[pid]))
@@ -89,6 +91,12 @@ enum LlamaProcesses {
             }
         }
         return map
+    }
+
+    /// Pull the `--port <n>` value out of the launch command.
+    private static func portArg(from command: String) -> Int? {
+        guard let r = command.range(of: "--port ") else { return nil }
+        return Int(command[r.upperBound...].prefix { $0.isNumber })
     }
 
     /// Parse macOS `ps` etime ("[[dd-]hh:]mm:ss") into seconds.

@@ -24,16 +24,13 @@ enum HealthStatus {
     }
 }
 
-/// Runs an end-to-end health check: environment (accessibility, Slack, engine) plus a live "reply
-/// with OK" inference against each configured model so you can confirm the whole pipeline works —
-/// not just that a server is up. Uses its own llama-server (role "health") which it stops afterwards.
+/// Runs a health check WITHOUT loading anything: environment (accessibility, Slack, engine) plus a
+/// live "reply with OK" ping to each llama-server that is ALREADY running (found via `ps`, addressed
+/// by its port), and the Apple model if it's configured. Nothing is spun up or killed.
 @MainActor
 final class HealthCheck: ObservableObject {
     @Published private(set) var items: [HealthItem] = []
     @Published private(set) var running = false
-
-    private let server = LlamaServer(role: "health")
-    func shutdown() { server.stop() }
 
     private func set(_ name: String, _ status: HealthStatus, _ detail: String) {
         if let i = items.firstIndex(where: { $0.name == name }) {
@@ -47,7 +44,7 @@ final class HealthCheck: ObservableObject {
         guard !running else { return }
         running = true
         items = []
-        defer { running = false; server.stop() }   // free the health model once done
+        defer { running = false }
 
         // --- Environment ---
         set("Accessibility permission", monitor.trusted ? .ok : .fail,
@@ -58,44 +55,40 @@ final class HealthCheck: ObservableObject {
         set("Local model engine", LlamaServer.isInstalled ? .ok : .warn,
             LlamaServer.isInstalled ? "Embedded llama-server present" : "Not found — Apple / cleanup only")
 
-        // --- Which models to test (deduped; a model shared by roles is pinged once) ---
-        var order: [String] = []
-        var labels: [String: [String]] = [:]
-        func want(_ label: String, _ id: String) {
-            if labels[id] == nil { order.append(id) }
-            labels[id, default: []].append(label)
-        }
-        switch RewriteEngineChoice.resolve(settings.rewriteEngineChoice, models: models) {
-        case .apple: want("Rewrite", "apple")
-        case .local(let m): want("Rewrite", m.id)
-        case .cleanup: set("Rewrite model", .warn, "No AI model selected — built-in cleanup only")
-        }
-        if settings.aiSpellEnabled, !settings.aiSpellModel.isEmpty { want("Spell check", settings.aiSpellModel) }
-        let chatId = UserDefaults.standard.string(forKey: "aiChat.model") ?? ""
-        if !chatId.isEmpty { want("Chat", chatId) }
-
-        // --- Live "reply OK" ping per distinct model ---
-        for id in order {
-            let roles = labels[id]!.joined(separator: " + ")
-            let modelName = id == "apple" ? "Apple on-device"
-                : (models.allModels.first { $0.id == id }?.name ?? id)
-            let name = "\(roles) · \(modelName)"
-            set(name, .running, "Loading model and sending a test prompt…")
-            let (status, detail) = await ping(id: id, models: models, params: params)
+        // --- Ping each ALREADY-RUNNING server (never load one) ---
+        let procs = LlamaProcesses.sample()
+        for p in procs {
+            let modelName = p.modelPath.map { models.modelDisplay(forPath: $0).name } ?? p.model
+            let name = "\(p.purpose) · \(modelName)"
+            guard let port = p.port else { set(name, .warn, "Couldn't read the server port"); continue }
+            set(name, .running, "Sending a test prompt…")
+            let (status, detail) = await pingPort(port)
             set(name, status, detail)
+        }
+
+        // --- Apple on-device (no server to load) if it's configured anywhere ---
+        let appleConfigured = RewriteEngineChoice.resolve(settings.rewriteEngineChoice, models: models) == .apple
+            || settings.aiSpellModel == "apple"
+            || UserDefaults.standard.string(forKey: "aiChat.model") == "apple"
+        if appleConfigured {
+            set("Apple on-device", .running, "Sending a test prompt…")
+            let (status, detail) = await pingApple()
+            set("Apple on-device", status, detail)
+        }
+
+        if procs.isEmpty && !appleConfigured {
+            set("Model servers", .warn,
+                "None running — trigger a rewrite, spell check, or chat first, then re-run.")
         }
     }
 
-    /// Send a minimal prompt and confirm the model replies with "OK".
-    private func ping(id: String, models: ModelManager, params: InferenceParams) async -> (HealthStatus, String) {
-        if id == "apple" { return await pingApple() }
-        guard let path = models.path(forID: id) else { return (.fail, "Model file not found on disk") }
+    /// Send a minimal prompt to an already-running server on `port` and confirm it replies "OK".
+    private func pingPort(_ port: Int) async -> (HealthStatus, String) {
         do {
-            try await server.ensureRunning(modelPath: path, reasoningOff: true)
-            var req = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!)
+            var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.timeoutInterval = 60
+            req.timeoutInterval = 30
             let body: [String: Any] = [
                 "model": "local", "stream": false, "temperature": 0, "max_tokens": 16,
                 "messages": [
