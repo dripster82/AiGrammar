@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let panelRouter = PanelRouter()
 
     let settings = Settings()
-    let monitor = FocusMonitor()
+    lazy var monitor = FocusMonitor(settings: settings)
     let models = ModelManager()
     let prompts = PromptStore()
     let inferenceParams = InferenceParams()
@@ -141,24 +141,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Menu-triggered: opening the menu bar backgrounds Slack, so its composer reads go stale.
     // Re-activate Slack first, then check against the live composer. (The ⌃⌘C shortcut doesn't
     // need this — pressing it leaves Slack focused.)
+    /// Re-activate the app we last targeted (opening our menu made us frontmost), then run the action.
+    private func reactivateTargetApp() {
+        if monitor.lastTargetPid != 0,
+           let app = NSRunningApplication(processIdentifier: monitor.lastTargetPid) {
+            app.activate()
+        }
+    }
     @objc private func checkNow() {
-        Log.write("[trigger] menu 'Check Spelling Now' selected — re-activating Slack")
-        NSRunningApplication.runningApplications(withBundleIdentifier: FocusMonitor.slackBundleID)
-            .first?.activate()
+        Log.write("[trigger] menu 'Check Spelling Now' selected — re-activating target app")
+        reactivateTargetApp()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             self?.pipeline.checkNow()
         }
     }
     @objc private func aiAutocorrect() {
-        NSRunningApplication.runningApplications(withBundleIdentifier: FocusMonitor.slackBundleID)
-            .first?.activate()
+        reactivateTargetApp()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             self?.pipeline.autocorrectSentenceWithAI()
         }
     }
     @objc private func rewriteSelection() {
-        NSRunningApplication.runningApplications(withBundleIdentifier: FocusMonitor.slackBundleID)
-            .first?.activate()
+        reactivateTargetApp()
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
             self?.rewriteController.rewriteSelection()
         }
@@ -249,7 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     /// our own process, so interacting with our popups doesn't count as leaving — they stay open.
     /// (Currently the target is Slack's composer; this generalizes as more apps are supported.)
     private func refreshIndicator() {
-        if monitor.snapshot.isSlack, let element = monitor.lastSlackElement,
+        if monitor.snapshot.isTarget, let element = monitor.lastTargetElement,
             let frame = AX.frame(element)
         {
             issueIndicator.update(count: lastIssueCount, composerAX: frame)
@@ -279,7 +283,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Launch at Login → Quit.
         let status =
             monitor.trusted
-            ? (monitor.snapshot.isSlack
+            ? (monitor.snapshot.isTarget
                 ? "Watching Slack composer" : "Ready — focus Slack to start")
             : "Accessibility permission needed"
         add(status, nil)

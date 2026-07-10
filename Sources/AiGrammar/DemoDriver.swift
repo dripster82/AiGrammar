@@ -27,7 +27,7 @@ enum DemoDriver {
             // AX position is in the same top-left screen space CGEvent uses); else guess window bottom.
             var clickPoint: CGPoint?
             DispatchQueue.main.sync {
-                if let el = monitor.lastSlackElement, let f = AX.frame(el), f.width > 0 {
+                if let el = monitor.lastTargetElement, let f = AX.frame(el), f.width > 0 {
                     clickPoint = CGPoint(x: f.midX, y: f.midY)
                     Log.write("demo: clicking known composer frame \(rect(f)) at \(pt(clickPoint!))")
                 } else if let frame = focusedWindowFrame(pid: slack.processIdentifier) {
@@ -40,14 +40,14 @@ enum DemoDriver {
             usleep(700_000)
 
             var acquired = false
-            DispatchQueue.main.sync { acquired = monitor.acquireSlackComposer() }
+            DispatchQueue.main.sync { acquired = monitor.acquireComposer() }
             Log.write("demo: composer acquired after click = \(acquired)")
             guard acquired else {
                 Log.write("demo: composer not reachable — click may have missed the message box"); return
             }
 
             // Start from an empty composer.
-            DispatchQueue.main.sync { if let el = monitor.lastSlackElement { AX.setValue(el, "") } }
+            DispatchQueue.main.sync { if let el = monitor.lastTargetElement { AX.setValue(el, "") } }
             usleep(400_000)
 
             // Type a word that should raise a SUGGESTION (helllo → hello).
@@ -81,7 +81,7 @@ enum DemoDriver {
             }
 
             // APPLY A SUGGESTION (the exact click-to-apply path the user reported broken).
-            DispatchQueue.main.sync { if let el = monitor.lastSlackElement { AX.setValue(el, "") } }
+            DispatchQueue.main.sync { if let el = monitor.lastTargetElement { AX.setValue(el, "") } }
             usleep(400_000)
             type("speeling ")   // suggestion: spelling
             usleep(1_200_000)
@@ -99,7 +99,7 @@ enum DemoDriver {
 
             // Test the MANUAL CHECK path (⌃⌘C / menu): type a misspelling that stays (no trailing
             // boundary so it won't autocorrect), then invoke checkNow and confirm a suggestion fires.
-            DispatchQueue.main.sync { if let el = monitor.lastSlackElement { AX.setValue(el, "") } }
+            DispatchQueue.main.sync { if let el = monitor.lastTargetElement { AX.setValue(el, "") } }
             usleep(400_000)
             type("speeling")   // no trailing space → suggestion, not autocorrect
             usleep(1_000_000)
@@ -110,7 +110,7 @@ enum DemoDriver {
             // REAL CLICK on the rendered popover — the closest autonomous analog to the user
             // clicking the suggestion bubble. Type a misspelling, let the live pipeline show the
             // popover, then synthesize a mouse click on its first suggestion row and verify the fix.
-            DispatchQueue.main.sync { if let el = monitor.lastSlackElement { AX.setValue(el, "") } }
+            DispatchQueue.main.sync { if let el = monitor.lastTargetElement { AX.setValue(el, "") } }
             usleep(400_000)
             type("helllo")            // no trailing space → stays as a suggestion at the cursor
             usleep(500_000)
@@ -137,7 +137,7 @@ enum DemoDriver {
 
             // Clean up so we don't leave test text in the user's composer (never sends — no Return).
             usleep(300_000)
-            DispatchQueue.main.sync { if let el = monitor.lastSlackElement { AX.setValue(el, "") } }
+            DispatchQueue.main.sync { if let el = monitor.lastTargetElement { AX.setValue(el, "") } }
         }
     }
 
@@ -172,7 +172,7 @@ enum DemoDriver {
     // MARK: Helpers
 
     private static func composerText(_ monitor: FocusMonitor) -> String {
-        monitor.lastSlackElement.flatMap { AX.string($0, kAXValueAttribute as String) } ?? ""
+        monitor.lastTargetElement.flatMap { AX.string($0, kAXValueAttribute as String) } ?? ""
     }
 
     private static func focusedWindowFrame(pid: pid_t) -> CGRect? {

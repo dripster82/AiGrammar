@@ -67,7 +67,7 @@ final class ComposerPipeline {
         // Schedule an AI check per its own cadence — only when auto-check is enabled. (When it's off,
         // the AI runs on demand only, via checkNow.)
         if settings.aiSpellEnabled, settings.aiSpellAuto, !settings.aiSpellModel.isEmpty,
-           let el = monitor.lastSlackElement,
+           let el = monitor.lastTargetElement,
            let text = AX.string(el, kAXValueAttribute as String) {
             let boundary = boundaryJustCompleted(old: lastText, new: text)
             lastText = text
@@ -110,7 +110,7 @@ final class ComposerPipeline {
             if Task.isCancelled { return }   // superseded — don't overwrite newer results
             await MainActor.run {
                 // Only apply if the composer still holds exactly what we checked.
-                guard let el = self.monitor.lastSlackElement,
+                guard let el = self.monitor.lastTargetElement,
                       AX.string(el, kAXValueAttribute as String) == text else { return }
                 self.aiIssues = result.issues
                 self.aiIssuesText = text
@@ -199,14 +199,14 @@ final class ComposerPipeline {
         Log.write("[check] checkNow() called — spell check running")
         debounce?.cancel()
         suppressUntil = .distantPast
-        // Menu-triggered checks make US frontmost (so `snapshot.isSlack` is false); a shortcut can
+        // Menu-triggered checks make US frontmost (so `snapshot.isTarget` is false); a shortcut can
         // fire before the 0.5s poll refreshes the snapshot. So don't gate the manual path on the
         // live focus — target the last-known Slack composer directly (re-acquiring if possible).
         let frontmost = NSWorkspace.shared.frontmostApplication?.localizedName ?? "?"
-        let acquired = monitor.acquireSlackComposer()
-        Log.write("[check] frontmost app=\(frontmost); acquireSlackComposer=\(acquired); "
-                + "lastSlackElement=\(monitor.lastSlackElement != nil ? "present" : "nil")")
-        guard let element = monitor.lastSlackElement else {
+        let acquired = monitor.acquireComposer()
+        Log.write("[check] frontmost app=\(frontmost); acquireComposer=\(acquired); "
+                + "lastTargetElement=\(monitor.lastTargetElement != nil ? "present" : "nil")")
+        guard let element = monitor.lastTargetElement else {
             Log.write("[check] ABORT: no Slack composer known — click into Slack's message box once first")
             onDismissUI?()
             return
@@ -217,7 +217,7 @@ final class ComposerPipeline {
     // MARK: Processing
 
     private func process() {
-        guard monitor.snapshot.isSlack, let element = monitor.lastSlackElement else {
+        guard monitor.snapshot.isTarget, let element = monitor.lastTargetElement else {
             onDismissUI?(); return
         }
         process(element: element, manual: false)
@@ -289,7 +289,7 @@ final class ComposerPipeline {
     /// Show the leftmost outstanding issue. Re-reads the composer each step so ranges stay correct
     /// after an edit, and highlights the word (selecting it also anchors the popover near it).
     private func showNextReviewIssue() {
-        guard reviewing, let element = monitor.lastSlackElement,
+        guard reviewing, let element = monitor.lastTargetElement,
               let text = AX.string(element, kAXValueAttribute as String), !text.isEmpty else {
             endReview(); return
         }
@@ -320,7 +320,7 @@ final class ComposerPipeline {
         reviewSkipped.removeAll()
         onDismissUI?()
         // Refresh the badge with whatever remains.
-        if let element = monitor.lastSlackElement,
+        if let element = monitor.lastTargetElement,
            let text = AX.string(element, kAXValueAttribute as String) {
             onIssueCount?(mergedIssues(in: text).count)
         }
@@ -332,8 +332,8 @@ final class ComposerPipeline {
     /// model's full "corrected" sentence (best quality); falls back to applying each top suggestion.
     /// Triggered from the menu.
     func autocorrectSentenceWithAI() {
-        _ = monitor.acquireSlackComposer()
-        guard let element = monitor.lastSlackElement,
+        _ = monitor.acquireComposer()
+        guard let element = monitor.lastTargetElement,
               let text = AX.string(element, kAXValueAttribute as String), !text.isEmpty else {
             Log.write("[aispell] auto-correct: no composer text"); onDismissUI?(); return
         }
@@ -454,7 +454,7 @@ final class ComposerPipeline {
     /// Apply a suggestion the user picked from the popover. Like autocorrect, but user-initiated
     /// and for any disposition — still records an undoable correction and shows the chip.
     func applySuggestion(_ issue: SpellIssue, replacement: String) {
-        guard let element = monitor.lastSlackElement,
+        guard let element = monitor.lastTargetElement,
               let text = AX.string(element, kAXValueAttribute as String) else { return }
         let ns = text as NSString
         guard issue.range.location + issue.range.length <= ns.length,
@@ -490,7 +490,7 @@ final class ComposerPipeline {
     }
 
     func undo(_ correction: Correction) {
-        guard let element = monitor.lastSlackElement,
+        guard let element = monitor.lastTargetElement,
               let text = AX.string(element, kAXValueAttribute as String) else { return }
         let ns = text as NSString
         // Never corrupt: only reverse if the corrected word is still exactly where we left it.
@@ -507,48 +507,61 @@ final class ComposerPipeline {
         Log.write("undo: \"\(correction.corrected)\" → \"\(correction.original)\" (now ignored)")
     }
 
-    /// Replace a character range using the PROVEN whole-text `setValue` path (Phase 1 showed
-    /// Slack's Quill composer applies `setValue` reliably but ignores targeted `setSelectedText`).
-    /// Restores the caret just after the replacement, once the async write settles.
+    /// Replace a character range, picking the write strategy from the field's capabilities:
+    /// - Native fields that allow targeted `AXSelectedText` → replace JUST the word (no whole-text
+    ///   churn), then put the caret back where the user was. Synchronous.
+    /// - Otherwise (Slack's Quill, many web fields) → whole-text `setValue` with an async caret
+    ///   restore (Quill applies the write asynchronously).
     @discardableResult
     private func replace(range: NSRange, with replacement: String,
                          in element: AXUIElement, currentText: String) -> Bool {
         let ns = currentText as NSString
         guard range.location + range.length <= ns.length else { return false }
-        let newText = ns.replacingCharacters(in: range, with: replacement)
-
-        // Where is the user's caret RIGHT NOW? Corrections happen behind the cursor while typing, so
-        // we must keep the caret where they are (shifted by the edit's length change) — not yank it
-        // back to the corrected word.
+        // Where is the user's caret now? Keep them there, shifted by the length change — don't yank it
+        // to the corrected word.
         let priorCaret = AX.range(element, kAXSelectedTextRangeAttribute as String)?.location
-
+        let repLen = (replacement as NSString).length
+        let caret = adjustedCaret(prior: priorCaret, range: range, repLen: repLen,
+                                  newLength: ns.length - range.length + repLen)
         suppress()
+
+        // Targeted in-place replacement for native fields (best: no churn, no cursor disruption).
+        if AX.isSettable(element, kAXSelectedTextAttribute as String) {
+            _ = AX.setSelectedRange(element, location: range.location, length: range.length)
+            if AX.setSelectedText(element, replacement) == .success {
+                _ = AX.setSelectedRange(element, location: caret, length: 0)
+                return true
+            }
+            // fall through to whole-text if the targeted write didn't take
+        }
+
+        // Whole-text write (Slack / web): replace everything, then restore the caret after it settles.
+        let newText = ns.replacingCharacters(in: range, with: replacement)
         guard AX.setValue(element, newText) == .success else {
             Log.write("replace failed: setValue rejected")
             return false
         }
-
-        let repLen = (replacement as NSString).length
-        let delta = repLen - range.length
-        let wordEnd = range.location + range.length
-        let target: Int
-        if let p = priorCaret {
-            if p >= wordEnd { target = p + delta }            // caret after the fix → shift by delta
-            else if p <= range.location { target = p }        // caret before the fix → unchanged
-            else { target = range.location + repLen }         // caret inside the word → end of the fix
-        } else {
-            target = range.location + repLen
-        }
-        let caret = max(0, min(target, (newText as NSString).length))
-
-        // Restore once the async setValue settles — but only if the user hasn't typed since (don't
-        // fight a cursor they've already moved).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             if AX.string(element, kAXValueAttribute as String) == newText {
                 _ = AX.setSelectedRange(element, location: caret, length: 0)
             }
         }
         return true
+    }
+
+    /// Keep the user's caret at its position, shifted by the edit's length change.
+    private func adjustedCaret(prior: Int?, range: NSRange, repLen: Int, newLength: Int) -> Int {
+        let wordEnd = range.location + range.length
+        let delta = repLen - range.length
+        let target: Int
+        if let p = prior {
+            if p >= wordEnd { target = p + delta }
+            else if p <= range.location { target = p }
+            else { target = range.location + repLen }
+        } else {
+            target = range.location + repLen
+        }
+        return max(0, min(target, newLength))
     }
 
     /// User chose "Ignore this word" — stop flagging it this session. Advances the review.
@@ -562,7 +575,7 @@ final class ComposerPipeline {
     /// Returns the applied (issue, replacement) so a driver can verify the result.
     @discardableResult
     func applyFirstSuggestionForTest() -> (word: String, replacement: String)? {
-        guard let element = monitor.lastSlackElement,
+        guard let element = monitor.lastTargetElement,
               let text = AX.string(element, kAXValueAttribute as String) else { return nil }
         let issues = spell.issues(in: text).filter { !ignored.contains($0.word.lowercased()) }
         guard let issue = issues.first(where: { $0.disposition == .suggest }),

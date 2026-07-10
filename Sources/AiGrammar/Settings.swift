@@ -3,6 +3,8 @@ import Combine
 
 /// User-facing toggles, persisted in UserDefaults. Local-only; nothing here is transmitted.
 final class Settings: ObservableObject {
+    static let slackBundleID = "com.tinyspeck.slackmacgap"
+
     @Published var autocorrectEnabled: Bool {
         didSet { UserDefaults.standard.set(autocorrectEnabled, forKey: "autocorrectEnabled") }
     }
@@ -13,6 +15,27 @@ final class Settings: ObservableObject {
     /// Which rewrite engine to use: "auto", "apple", "cleanup", or a local model's id.
     @Published var rewriteEngineChoice: String {
         didSet { UserDefaults.standard.set(rewriteEngineChoice, forKey: "rewriteEngineChoice") }
+    }
+
+    // MARK: Which apps AiGrammar acts in
+
+    /// Act in ANY app with an editable text field (except denied ones and secure fields).
+    @Published var targetAllApps: Bool {
+        didSet { UserDefaults.standard.set(targetAllApps, forKey: "target.allApps") }
+    }
+    /// Bundle IDs to act in when not "all apps". Slack seeded by default.
+    @Published var allowedApps: [String] {
+        didSet { UserDefaults.standard.set(allowedApps, forKey: "target.allowed") }
+    }
+    /// Bundle IDs to NEVER act in (used to carve exceptions out of "all apps").
+    @Published var deniedApps: [String] {
+        didSet { UserDefaults.standard.set(deniedApps, forKey: "target.denied") }
+    }
+
+    /// Whether AiGrammar should act in the app with this bundle id.
+    func isAppTargeted(_ bundleID: String) -> Bool {
+        guard !bundleID.isEmpty, !deniedApps.contains(bundleID) else { return false }
+        return targetAllApps || allowedApps.contains(bundleID)
     }
 
     // MARK: AI spell check (model-based, context-aware; supplements the dictionary checker)
@@ -55,5 +78,8 @@ final class Settings: ObservableObject {
         aiSpellCadence = d.string(forKey: "aiSpell.cadence") ?? "delayed"
         aiSpellDelayMs = d.object(forKey: "aiSpell.delayMs") as? Int ?? 700
         aiSpellReasoning = d.string(forKey: "aiSpell.reasoning") ?? "none"
+        targetAllApps = d.object(forKey: "target.allApps") as? Bool ?? false
+        allowedApps = d.stringArray(forKey: "target.allowed") ?? [Self.slackBundleID]
+        deniedApps = d.stringArray(forKey: "target.denied") ?? []
     }
 }

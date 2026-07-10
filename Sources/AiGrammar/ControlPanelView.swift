@@ -79,9 +79,9 @@ private struct DashboardPage: View {
                           monitor.trusted ? "Granted" : "Needed",
                           ok: monitor.trusted,
                           action: monitor.trusted ? nil : { AX.openAccessibilitySettings() })
-                statusRow("Slack composer",
-                          monitor.snapshot.isSlack ? "Watching" : "Focus Slack to start",
-                          ok: monitor.snapshot.isSlack, action: nil)
+                statusRow("Text field",
+                          monitor.snapshot.isTarget ? "Watching \(monitor.snapshot.appName)" : "Focus a text field in a targeted app",
+                          ok: monitor.snapshot.isTarget, action: nil)
                 statusRow("Rewrite engine",
                           RewriteEngineChoice.resolve(settings.rewriteEngineChoice, models: models).displayName,
                           ok: true, action: nil)
@@ -119,6 +119,94 @@ private struct DashboardPage: View {
             if let action { Button("Fix…", action: action).controlSize(.small) }
         }
         .font(.callout)
+    }
+}
+
+// MARK: - App targeting
+
+/// Which apps AiGrammar acts in: an allowlist you add to (from running apps), an "all apps" toggle,
+/// and a denylist to carve out exceptions.
+private struct AppTargetingView: View {
+    @ObservedObject var settings: Settings
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Card(title: "Where AiGrammar works", icon: "macwindow.on.rectangle") {
+                Toggle("Act in all apps with a text field", isOn: $settings.targetAllApps)
+                Text(settings.targetAllApps
+                    ? "Works in every app except the excluded ones below. Password fields are always ignored."
+                    : "Works only in the allowed apps below. Password fields are always ignored.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+
+            if !settings.targetAllApps {
+                appListCard(title: "Allowed apps",
+                            subtitle: "AiGrammar watches these apps.",
+                            ids: $settings.allowedApps)
+            }
+            appListCard(title: settings.targetAllApps ? "Excluded apps" : "Never act in these",
+                        subtitle: settings.targetAllApps
+                            ? "Carve exceptions out of “all apps”."
+                            : "Blocks an app even if it's allowed above.",
+                        ids: $settings.deniedApps)
+        }
+    }
+
+    /// Regular (dock) apps currently running, minus ourselves — the pool of apps you can add.
+    private var runningApps: [(name: String, bundleID: String)] {
+        var seen = Set<String>()
+        return NSWorkspace.shared.runningApplications
+            .filter { $0.activationPolicy == .regular }
+            .compactMap { app -> (String, String)? in
+                guard let bid = app.bundleIdentifier, bid != Bundle.main.bundleIdentifier,
+                      seen.insert(bid).inserted else { return nil }
+                return (app.localizedName ?? bid, bid)
+            }
+            .sorted { $0.0.localizedCaseInsensitiveCompare($1.0) == .orderedAscending }
+    }
+
+    private func appName(_ bundleID: String) -> String {
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleID).first?.localizedName
+            ?? (bundleID == Settings.slackBundleID ? "Slack" : bundleID)
+    }
+
+    private func appListCard(title: String, subtitle: String, ids: Binding<[String]>) -> some View {
+        Card(title: title, icon: "app.badge") {
+            Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            if ids.wrappedValue.isEmpty {
+                Text("None yet.").font(.callout).foregroundStyle(.tertiary)
+            }
+            ForEach(ids.wrappedValue, id: \.self) { bid in
+                HStack(spacing: 8) {
+                    Image(systemName: "app.dashed").foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(appName(bid)).font(.callout)
+                        Text(bid).font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    Spacer()
+                    Button {
+                        ids.wrappedValue.removeAll { $0 == bid }
+                    } label: { Image(systemName: "minus.circle.fill") }
+                        .buttonStyle(.plain).foregroundStyle(.red)
+                        .help("Remove")
+                }
+            }
+            Menu {
+                let addable = runningApps.filter { !ids.wrappedValue.contains($0.bundleID) }
+                if addable.isEmpty {
+                    Text("No other running apps")
+                } else {
+                    ForEach(addable, id: \.bundleID) { app in
+                        Button(app.name) {
+                            if !ids.wrappedValue.contains(app.bundleID) { ids.wrappedValue.append(app.bundleID) }
+                        }
+                    }
+                }
+            } label: {
+                Label("Add a running app", systemImage: "plus")
+            }
+            .menuStyle(.borderlessButton).fixedSize().controlSize(.small)
+        }
     }
 }
 
@@ -436,11 +524,12 @@ private struct SettingsPage: View {
     @State private var tab: SettingsTab = .models
 
     enum SettingsTab: String, CaseIterable, Identifiable {
-        case models, corrections, prompts, parameters, shortcuts, about
+        case models, apps, corrections, prompts, parameters, shortcuts, about
         var id: String { rawValue }
         var label: String {
             switch self {
             case .models: return "AI Models"
+            case .apps: return "Apps"
             case .corrections: return "Corrections"
             case .prompts: return "AI Prompts"
             case .parameters: return "Parameters"
@@ -459,6 +548,7 @@ private struct SettingsPage: View {
 
             switch tab {
             case .models: AIModelsPage(models: models, settings: settings)
+            case .apps: AppTargetingView(settings: settings)
             case .corrections: correctionsCard
             case .prompts: promptsCard
             case .parameters: parametersCard
@@ -819,20 +909,20 @@ private struct DiagnosticsPage: View {
             Card(title: "Focused element", icon: "cursorarrow.rays") {
                 let s = monitor.snapshot
                 LabeledContent("App", value: "\(s.appName)  (\(s.bundleID))")
-                LabeledContent("Slack?", value: s.isSlack ? "yes" : "no")
+                LabeledContent("Targeted?", value: s.isTarget ? "yes" : "no")
                 LabeledContent("Role", value: s.role)
                 LabeledContent("Capabilities", value: s.caps.summary)
                 LabeledContent("AX changes", value: "\(monitor.observedChangeCount)")
             }
 
             Card(title: "Write test", icon: "pencil.and.outline") {
-                Text("Click into Slack's message box, type something, then run the test. It appends a marker, verifies it, and restores your text.")
+                Text("Click into a text field (e.g. Slack, a browser), type something, then run the test. It appends a marker, verifies it, and restores your text.")
                     .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button("Run write test") { monitor.runWriteTest() }
-                        .disabled(monitor.lastSlackElement == nil)
+                        .disabled(monitor.lastTargetElement == nil)
                     Button("Run read diagnostic") { monitor.runReadDiagnostic() }
-                        .disabled(monitor.lastSlackElement == nil)
+                        .disabled(monitor.lastTargetElement == nil)
                 }
                 .controlSize(.small)
                 ForEach(Array(monitor.log.suffix(8).enumerated()), id: \.offset) { _, line in

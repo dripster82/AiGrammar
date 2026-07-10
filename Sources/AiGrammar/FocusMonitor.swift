@@ -24,7 +24,8 @@ struct Capabilities {
 struct FocusSnapshot {
     var appName = "—"
     var bundleID = "—"
-    var isSlack = false
+    /// The focused element is an editable text field in a targeted app — the gate for all corrections.
+    var isTarget = false
     var role = "—"
     var roleDescription = "—"
     var attributes: [String] = []
@@ -39,29 +40,32 @@ struct FocusSnapshot {
 /// will use AXObserver + debounce) and probes what Slack exposes. Also tries to install an
 /// AXObserver on the focused element so "can observe changes?" gets a real answer, not a guess.
 final class FocusMonitor: ObservableObject {
-    static let slackBundleID = "com.tinyspeck.slackmacgap"
+    private let settings: Settings
+    init(settings: Settings) { self.settings = settings }
 
     @Published var trusted = AX.isTrusted
     @Published var snapshot = FocusSnapshot()
     @Published var observedChangeCount = 0
     @Published var log: [String] = []
 
-    /// Last element seen focused inside Slack. The write test targets this, so it keeps working
-    /// even though clicking our (non-activating) panel can momentarily shift AX focus.
-    private(set) var lastSlackElement: AXUIElement?
+    /// Last editable text element seen in a targeted app. The pipeline targets this so it keeps
+    /// working even though clicking our (non-activating) panel can momentarily shift AX focus.
+    private(set) var lastTargetElement: AXUIElement?
+    /// The pid of the app owning `lastTargetElement`, so menu actions can re-activate it.
+    private(set) var lastTargetPid: pid_t = 0
 
     private var timer: Timer?
     private var observer: AXObserver?
     private var observedPid: pid_t = 0
-    private var slackA11yEnabledPid: pid_t = 0
+    private var a11yEnabledPids = Set<pid_t>()
     private var lastTrusted: Bool?
     private var lastLoggedSignature = ""
     private var lastComposerText: String?
     private var wasComposerFocused = false
 
-    /// Fires when Slack's composer text changes (drives the correction pipeline).
+    /// Fires when the targeted composer's text changes (drives the correction pipeline).
     var onComposerValueChanged: (() -> Void)?
-    /// Fires when focus leaves Slack's composer (dismiss transient UI).
+    /// Fires when focus leaves the targeted composer (dismiss transient UI).
     var onComposerUnfocused: (() -> Void)?
 
     func start() {
@@ -79,15 +83,15 @@ final class FocusMonitor: ObservableObject {
             Log.write("Accessibility trusted = \(trusted)")
         }
 
-        // Force Slack's Electron accessibility tree on (idempotent per pid). Retries every tick
-        // until it succeeds, since it can't work until permission is granted.
-        enableSlackAccessibilityIfNeeded()
+        // Force the focused app's accessibility tree on if it's a targeted app (needed for
+        // Electron/Chromium and WebKit; harmless on native apps). Idempotent per pid.
+        enableAccessibilityForFrontmostTargetIfNeeded()
 
         // Dev hook: if the sentinel exists and we can reach Slack's composer, run the read
         // diagnostic against the live (frontmost) Slack tree, then clear the sentinel.
         let sentinel = NSHomeDirectory() + "/.aigrammar-readdiag"
         if trusted, FileManager.default.fileExists(atPath: sentinel) {
-            if lastSlackElement != nil || acquireSlackComposer() {
+            if lastTargetElement != nil || acquireComposer() {
                 try? FileManager.default.removeItem(atPath: sentinel)
                 Log.write("readdiag: composer acquired, running diagnostic.")
                 runReadDiagnostic()
@@ -100,7 +104,6 @@ final class FocusMonitor: ObservableObject {
             if let front = NSWorkspace.shared.frontmostApplication {
                 snap.appName = front.localizedName ?? "?"
                 snap.bundleID = front.bundleIdentifier ?? "?"
-                snap.isSlack = front.bundleIdentifier == Self.slackBundleID
             }
             snap.role = trusted ? "(no focused element read)" : "(waiting for Accessibility permission)"
             logSnapshotIfChanged(snap)
@@ -110,13 +113,14 @@ final class FocusMonitor: ObservableObject {
         }
 
         var snap = FocusSnapshot()
+        var appTargeted = false
         if let pid = AX.pid(element),
            let app = NSRunningApplication(processIdentifier: pid) {
             // Ignore our own windows so the panel keeps showing the last interesting state.
             if app.processIdentifier == ProcessInfo.processInfo.processIdentifier { return }
             snap.appName = app.localizedName ?? "?"
             snap.bundleID = app.bundleIdentifier ?? "?"
-            snap.isSlack = app.bundleIdentifier == Self.slackBundleID
+            appTargeted = settings.isAppTargeted(snap.bundleID)
         }
 
         snap.role = AX.string(element, kAXRoleAttribute as String) ?? "—"
@@ -139,18 +143,35 @@ final class FocusMonitor: ObservableObject {
         }
         snap.caps.canObserve = installObserverIfNeeded(for: element)
 
-        if snap.isSlack {
-            lastSlackElement = element
+        // Target = a targeted app AND the focused element is an editable, non-secure text field.
+        snap.isTarget = appTargeted && isEditableTextField(element, role: snap.role, caps: snap.caps)
+
+        if snap.isTarget {
+            lastTargetElement = element
+            lastTargetPid = AX.pid(element) ?? 0
         }
         logSnapshotIfChanged(snap)
         snapshot = snap
         notifyComposerState(snap)
     }
 
+    /// An element we can safely correct: a text field/area/combo box that's writable and NOT a secure
+    /// (password) field.
+    private func isEditableTextField(_ element: AXUIElement, role: String, caps: Capabilities) -> Bool {
+        let textRoles: Set<String> = [
+            kAXTextAreaRole as String, kAXTextFieldRole as String, kAXComboBoxRole as String,
+        ]
+        guard textRoles.contains(role) else { return false }
+        if AX.string(element, kAXSubroleAttribute as String) == (kAXSecureTextFieldSubrole as String) {
+            return false
+        }
+        return caps.canWriteValue || caps.canWriteSelectedText
+    }
+
     /// Poll-based fallback so text changes are caught even if the AXObserver missed them (e.g. it
     /// was installed on a sibling element). Both paths funnel into the debounced pipeline.
     private func notifyComposerState(_ snap: FocusSnapshot) {
-        if snap.isSlack {
+        if snap.isTarget {
             wasComposerFocused = true
             if snap.text != lastComposerText {
                 lastComposerText = snap.text
@@ -163,31 +184,39 @@ final class FocusMonitor: ObservableObject {
         }
     }
 
-    /// Acquire Slack's composer without relying on system-wide focus, by asking Slack's app element
-    /// for its focused UI element. Used by the headless diagnostic (osascript-activate doesn't make
-    /// the composer first responder the way a real click does).
+    /// Acquire the frontmost targeted app's text field without relying on system-wide focus, by asking
+    /// its app element for its focused UI element. Used by the menu-triggered check/rewrite (activating
+    /// via the menu can leave AX focus stale).
     @discardableResult
-    func acquireSlackComposer() -> Bool {
-        guard let slack = NSRunningApplication
-                .runningApplications(withBundleIdentifier: Self.slackBundleID).first else { return false }
-        let app = AXUIElementCreateApplication(slack.processIdentifier)
-        guard let focused = AX.copyAttribute(app, kAXFocusedUIElementAttribute as String),
-              CFGetTypeID(focused) == AXUIElementGetTypeID() else { return false }
-        let element = focused as! AXUIElement
-        let role = AX.string(element, kAXRoleAttribute as String)
-        if role == kAXTextAreaRole as String || role == kAXTextFieldRole as String {
-            lastSlackElement = element
-            Log.write("acquireSlackComposer: via focused element (\(role ?? "?"))")
-            return true
+    func acquireComposer() -> Bool {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              settings.isAppTargeted(app.bundleIdentifier ?? "") else {
+            Log.write("acquireComposer: frontmost app is not targeted")
+            return false
         }
-        // Composer isn't first responder (no click) — search the window tree for the text area.
-        if let composer = Self.searchTextArea(app) {
+        let appEl = AXUIElementCreateApplication(app.processIdentifier)
+        if let focused = AX.copyAttribute(appEl, kAXFocusedUIElementAttribute as String),
+           CFGetTypeID(focused) == AXUIElementGetTypeID() {
+            let element = focused as! AXUIElement
+            let role = AX.string(element, kAXRoleAttribute as String) ?? ""
+            if isEditableTextField(element, role: role,
+                                   caps: Capabilities(canWriteValue: AX.isSettable(element, kAXValueAttribute as String),
+                                                      canWriteSelectedText: AX.isSettable(element, kAXSelectedTextAttribute as String))) {
+                lastTargetElement = element
+                lastTargetPid = app.processIdentifier
+                Log.write("acquireComposer: via focused element (\(role))")
+                return true
+            }
+        }
+        // Not first responder — search the window tree for a text area.
+        if let composer = Self.searchTextArea(appEl) {
             _ = AXUIElementSetAttributeValue(composer, kAXFocusedAttribute as CFString, kCFBooleanTrue)
-            lastSlackElement = composer
-            Log.write("acquireSlackComposer: via tree search")
+            lastTargetElement = composer
+            lastTargetPid = app.processIdentifier
+            Log.write("acquireComposer: via tree search")
             return true
         }
-        Log.write("acquireSlackComposer: FAILED (focused role=\(role ?? "nil")); keeping \(lastSlackElement == nil ? "no" : "previous") element")
+        Log.write("acquireComposer: FAILED; keeping \(lastTargetElement == nil ? "no" : "previous") element")
         return false
     }
 
@@ -202,14 +231,14 @@ final class FocusMonitor: ObservableObject {
         return nil
     }
 
-    private func enableSlackAccessibilityIfNeeded() {
-        guard let slack = NSRunningApplication
-                .runningApplications(withBundleIdentifier: Self.slackBundleID).first else { return }
-        let pid = slack.processIdentifier
-        guard pid != slackA11yEnabledPid else { return }
+    private func enableAccessibilityForFrontmostTargetIfNeeded() {
+        guard let app = NSWorkspace.shared.frontmostApplication,
+              let bid = app.bundleIdentifier, settings.isAppTargeted(bid) else { return }
+        let pid = app.processIdentifier
+        guard !a11yEnabledPids.contains(pid) else { return }
         if AX.enableManualAccessibility(pid: pid) {
-            slackA11yEnabledPid = pid
-            Log.write("Enabled AXManualAccessibility on Slack (pid \(pid)).")
+            a11yEnabledPids.insert(pid)
+            Log.write("Enabled accessibility on \(app.localizedName ?? bid) (pid \(pid)).")
         }
     }
 
@@ -217,7 +246,7 @@ final class FocusMonitor: ObservableObject {
         let sig = "\(snap.bundleID)|\(snap.role)|\(snap.caps.summary)|len=\(snap.text?.count ?? -1)"
         guard sig != lastLoggedSignature else { return }
         lastLoggedSignature = sig
-        Log.write("focus app=\(snap.appName) bundle=\(snap.bundleID) slack=\(snap.isSlack) "
+        Log.write("focus app=\(snap.appName) bundle=\(snap.bundleID) target=\(snap.isTarget) "
                 + "role=\(snap.role) [\(snap.caps.summary)] textLen=\(snap.text?.count ?? -1)")
     }
 
@@ -261,7 +290,7 @@ final class FocusMonitor: ObservableObject {
 
     private func noteObservedChange(_ name: String) {
         observedChangeCount += 1
-        if name == kAXValueChangedNotification as String, snapshot.isSlack {
+        if name == kAXValueChangedNotification as String, snapshot.isTarget {
             onComposerValueChanged?()
         }
     }
@@ -272,7 +301,7 @@ final class FocusMonitor: ObservableObject {
     /// AXSelectedText), verify the read-back, then restore the original text and cursor. If this
     /// round-trips cleanly against Slack, the direct AX write path is viable.
     func runWriteTest() {
-        guard let element = lastSlackElement else {
+        guard let element = lastTargetElement else {
             appendLog("✗ No Slack composer seen yet — click into Slack's message box first.")
             return
         }
@@ -337,7 +366,7 @@ final class FocusMonitor: ObservableObject {
     /// to discover which read path is reliable on Slack's Electron composer (AXValue read-back is
     /// known to be lossy). Restores the original afterwards.
     func runReadDiagnostic() {
-        guard let element = lastSlackElement else {
+        guard let element = lastTargetElement else {
             appendLog("✗ No Slack composer seen yet — click into Slack's message box first.")
             return
         }

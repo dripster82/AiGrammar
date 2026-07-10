@@ -49,9 +49,9 @@ final class HealthCheck: ObservableObject {
         // --- Environment ---
         set("Accessibility permission", monitor.trusted ? .ok : .fail,
             monitor.trusted ? "Granted" : "Not granted — corrections can't be applied")
-        let slackSeen = monitor.lastSlackElement != nil || monitor.snapshot.isSlack
-        set("Slack composer", slackSeen ? .ok : .warn,
-            slackSeen ? "Detected" : "Click into Slack's message box once, then re-run")
+        let seen = monitor.lastTargetElement != nil || monitor.snapshot.isTarget
+        set("Text field", seen ? .ok : .warn,
+            seen ? "A targeted text field was seen" : "Focus a text field in a targeted app, then re-run")
         set("Local model engine", LlamaServer.isInstalled ? .ok : .warn,
             LlamaServer.isInstalled ? "Embedded llama-server present" : "Not found — Apple / cleanup only")
 

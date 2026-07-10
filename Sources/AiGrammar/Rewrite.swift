@@ -71,10 +71,10 @@ final class RewriteController {
     /// Triggered by ⌃⌘R or the badge menu. Rewrites the selection — or, if nothing is selected,
     /// the entire composer message. `preset` (from ⌃⌘1–4) runs that rewrite immediately.
     func rewriteSelection(preset: RewriteInstruction? = nil) {
-        if !monitor.snapshot.isSlack { monitor.acquireSlackComposer() }
-        guard let element = monitor.lastSlackElement else {
-            Log.write("rewrite: no Slack composer")
-            popover.showMessage("Focus Slack's message box first.")
+        if !monitor.snapshot.isTarget { monitor.acquireComposer() }
+        guard let element = monitor.lastTargetElement else {
+            Log.write("rewrite: no target text field")
+            popover.showMessage("Focus a text field in a targeted app first.")
             return
         }
 
