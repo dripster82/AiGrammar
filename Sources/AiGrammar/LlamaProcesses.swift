@@ -9,7 +9,8 @@ struct LlamaProc: Identifiable {
     let cpu: Double        // percent
     let memMB: Double      // resident size
     let uptimeSec: Int     // elapsed running time in seconds
-    let model: String      // gguf filename (from the -m argument)
+    let modelPath: String? // full path from the -m argument (to look up the model's stored detail)
+    let model: String      // gguf filename (fallback label)
     let role: String?      // "rewrite" | "spell" | "chat" (from the pidfile), else nil
 
     /// Friendly purpose label for the role.
@@ -53,9 +54,12 @@ enum LlamaProcesses {
             // not some other process that merely mentions "llama-server" in its arguments.
             guard let exe = command.split(separator: " ").first,
                   exe.hasSuffix("llama-server") || exe == "llama-server" else { continue }
+            let mPath = modelPath(from: command)
             procs.append(LlamaProc(id: pid, cpu: cpu, memMB: rssKB / 1024.0,
                                    uptimeSec: parseEtime(String(parts[3])),
-                                   model: modelName(from: command), role: roles[pid]))
+                                   modelPath: mPath,
+                                   model: mPath.map { ($0 as NSString).lastPathComponent } ?? "(unknown model)",
+                                   role: roles[pid]))
         }
         return procs.sorted { $0.cpu > $1.cpu }
     }
@@ -99,19 +103,15 @@ enum LlamaProcesses {
         return days * 86400 + secs
     }
 
-    /// Pull the gguf filename out of the launch command's `-m <path>` argument. The path can contain
+    /// Pull the model path out of the launch command's `-m <path>` argument. The path can contain
     /// spaces (e.g. "…/Application Support/…"), so we take everything after "-m " up to ".gguf"
     /// rather than splitting on spaces.
-    private static func modelName(from command: String) -> String {
-        guard let m = command.range(of: "-m ") else { return "(unknown model)" }
+    private static func modelPath(from command: String) -> String? {
+        guard let m = command.range(of: "-m ") else { return nil }
         let after = command[m.upperBound...]
-        if let g = after.range(of: ".gguf") {
-            return (String(after[..<g.upperBound]) as NSString).lastPathComponent
-        }
-        if let flag = after.range(of: " --") {          // fallback: up to the next flag
-            return (String(after[..<flag.lowerBound]) as NSString).lastPathComponent
-        }
-        return (String(after) as NSString).lastPathComponent
+        if let g = after.range(of: ".gguf") { return String(after[..<g.upperBound]) }
+        if let flag = after.range(of: " --") { return String(after[..<flag.lowerBound]) }
+        return String(after)
     }
 
     private static func run(_ path: String, _ args: [String]) -> String? {

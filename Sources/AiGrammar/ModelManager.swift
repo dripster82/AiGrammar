@@ -210,6 +210,38 @@ final class ModelManager: NSObject, ObservableObject {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 
+    /// The subtitle line shown on the AI Models page: built-in models keep their curated detail with
+    /// the real size; user-added models show detail read from the file. Shared by the model list and
+    /// the Diagnostics running-models list so they read the same.
+    func displayDetail(for model: ModelInfo) -> String {
+        let parsed = fileMetadata(for: model) ?? remoteMeta[model.id]
+        if model.builtIn {
+            let size = (parsed?.sizeNote).flatMap { $0.isEmpty ? nil : $0 } ?? model.sizeNote
+            return size.isEmpty ? model.detail : "\(model.detail) · \(size)"
+        }
+        if let m = parsed, !(m.detail.isEmpty && m.sizeNote.isEmpty) {
+            return m.sizeNote.isEmpty ? m.detail : "\(m.detail) · \(m.sizeNote)"
+        }
+        return model.sizeNote.isEmpty ? model.detail : "\(model.detail) · \(model.sizeNote)"
+    }
+
+    /// Name + detail for a model given the on-disk file path a llama-server was launched with — so the
+    /// Diagnostics list reads like the AI Models page. Matches a known model when possible, else reads
+    /// the gguf header directly.
+    func modelDisplay(forPath path: String) -> (name: String, detail: String) {
+        if let model = allModels.first(where: { self.path(forID: $0.id) == path }) {
+            return (model.name, displayDetail(for: model))
+        }
+        let name = (path as NSString).lastPathComponent
+        guard let info = GGUFMetadata.parse(fileAt: path) else { return (name, "") }
+        var detail = GGUFMetadata.detailString(info)
+        if let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int {
+            let sz = Self.sizeString(size)
+            detail = detail.isEmpty ? sz : "\(detail) · \(sz)"
+        }
+        return (name, detail)
+    }
+
     /// Fetch a remote model's header + total size via ONE HTTP Range request — no full download.
     /// Publishes into `remoteMeta` so rows update live. Runs at most once per id; skipped for
     /// local-path models and models already on disk.

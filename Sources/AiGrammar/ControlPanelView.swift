@@ -371,23 +371,7 @@ private struct ModelRow: View {
         .task { models.prefetchRemoteMetadata(for: model) }   // fetch size+quant without downloading
     }
 
-    /// Metadata read from the actual .gguf (on-disk, else a partial remote fetch).
-    private var parsed: (detail: String, sizeNote: String)? {
-        models.fileMetadata(for: model) ?? models.remoteMeta[model.id]
-    }
-
-    /// Built-in catalog models keep their curated detail (nicer: org + param count) but adopt the
-    /// real fetched size. User-added models show the full detail read from the file.
-    private var subtitle: String {
-        if model.builtIn {
-            let size = (parsed?.sizeNote).flatMap { $0.isEmpty ? nil : $0 } ?? model.sizeNote
-            return size.isEmpty ? model.detail : "\(model.detail) · \(size)"
-        }
-        if let m = parsed, !(m.detail.isEmpty && m.sizeNote.isEmpty) {
-            return m.sizeNote.isEmpty ? m.detail : "\(m.detail) · \(m.sizeNote)"
-        }
-        return model.sizeNote.isEmpty ? model.detail : "\(model.detail) · \(model.sizeNote)"
-    }
+    private var subtitle: String { models.displayDetail(for: model) }
 
     @ViewBuilder private var controls: some View {
         if case .remote(let url) = model.source, model.directDownloadURL == nil {
@@ -871,6 +855,7 @@ private struct DiagnosticsPage: View {
                     .font(.callout).foregroundStyle(.secondary)
             } else {
                 ForEach(procs) { p in
+                    let info = p.modelPath.map { models.modelDisplay(forPath: $0) }
                     HStack(spacing: 8) {
                         Circle().fill(.green).frame(width: 7, height: 7)
                         VStack(alignment: .leading, spacing: 1) {
@@ -878,7 +863,11 @@ private struct DiagnosticsPage: View {
                                 Text(p.purpose).font(.callout.weight(.medium))
                                 Text("pid \(p.id)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                             }
-                            Text(p.model).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            Text(info?.name ?? p.model).font(.caption.weight(.medium))
+                                .foregroundStyle(.secondary).lineLimit(1)
+                            if let d = info?.detail, !d.isEmpty {
+                                Text(d).font(.caption2).foregroundStyle(.tertiary).lineLimit(1)
+                            }
                         }
                         Spacer()
                         VStack(alignment: .trailing, spacing: 1) {
