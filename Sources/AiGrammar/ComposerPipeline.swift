@@ -121,22 +121,35 @@ final class ComposerPipeline {
         }
     }
 
-    /// AI issues take precedence, plus any dictionary issues that don't overlap one. The AI words are
-    /// RE-LOCATED against the current text every call, so applying one correction (which changes the
-    /// text) doesn't discard the remaining AI suggestions — a fixed word just stops being found.
+    /// AI issues take precedence, MERGED with the dictionary's guesses for the same word (best of both
+    /// — AI options first, marked; dictionary options fill in). The AI words are RE-LOCATED against the
+    /// current text every call, so applying one correction doesn't lose the remaining AI suggestions.
     private func mergedIssues(in text: String) -> [SpellIssue] {
         var claimed: [NSRange] = []
-        // AI first so its context-aware suggestion wins over the dictionary's context-free guess
-        // for the same word (e.g. AI "wong→wrong" beats dictionary "wong→song").
-        var all = relocate(aiIssues, in: text, claimed: &claimed)
-        for d in spell.issues(in: text) where !claimed.contains(where: {
-            NSIntersectionRange($0, d.range).length > 0
-        }) {
+        var ai = relocate(aiIssues, in: text, claimed: &claimed)
+        let dict = spell.issues(in: text)
+        // Fold overlapping dictionary guesses into each AI issue (keeps the AI/brain marking).
+        for i in ai.indices {
+            if let d = dict.first(where: { NSIntersectionRange($0.range, ai[i].range).length > 0 }) {
+                ai[i] = combine(ai: ai[i], dict: d)
+            }
+        }
+        var all = ai
+        for d in dict where !claimed.contains(where: { NSIntersectionRange($0, d.range).length > 0 }) {
             all.append(d)
             claimed.append(d.range)
         }
         return all.filter { !ignored.contains($0.word.lowercased()) }
                   .sorted { $0.range.location < $1.range.location }
+    }
+
+    /// One issue whose guesses = AI options (first, kept as aiGuesses) + any new dictionary options.
+    private func combine(ai: SpellIssue, dict: SpellIssue) -> SpellIssue {
+        var guesses = ai.guesses
+        let have = Set(guesses.map { $0.lowercased() })
+        for g in dict.guesses where !have.contains(g.lowercased()) { guesses.append(g) }
+        return SpellIssue(range: ai.range, word: ai.word, guesses: guesses,
+                          disposition: ai.disposition, aiGuesses: ai.aiGuesses)
     }
 
     /// Find each cached AI issue's word/span in the current text (whole-word, non-overlapping), so
@@ -154,7 +167,8 @@ final class ComposerPipeline {
                    isWholeWord(found, in: ns) {
                     claimed.append(found)
                     out.append(SpellIssue(range: found, word: issue.word,
-                                          guesses: issue.guesses, disposition: .suggest))
+                                          guesses: issue.guesses, disposition: .suggest,
+                                          aiGuesses: issue.aiGuesses))
                     break
                 }
                 from = found.location + max(found.length, 1)

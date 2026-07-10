@@ -909,11 +909,12 @@ private struct DiagnosticsPage: View {
             } else {
                 ForEach(procs) { p in
                     let info = p.modelPath.map { models.modelDisplay(forPath: $0) }
+                    let purpose = LlamaServerPool.shared.purposeLabel(forModelPath: p.modelPath ?? "")
                     HStack(spacing: 8) {
                         Circle().fill(.green).frame(width: 7, height: 7)
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 6) {
-                                Text(p.purpose).font(.callout.weight(.medium))
+                                Text(purpose).font(.callout.weight(.medium))
                                 Text("pid \(p.id)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                             }
                             Text(info?.name ?? p.model).font(.caption.weight(.medium))
@@ -940,7 +941,7 @@ private struct DiagnosticsPage: View {
                     }
                     .padding(.vertical, 2)
                 }
-                Text("Each rewrite / spell-check / chat model runs its own llama-server. Killing one frees its memory; it relaunches on next use.")
+                Text("Features that share a model share one server. Killing one frees its memory; it relaunches on next use.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }
@@ -949,14 +950,14 @@ private struct DiagnosticsPage: View {
             isPresented: Binding(get: { killTarget != nil }, set: { if !$0 { killTarget = nil } }),
             presenting: killTarget
         ) { p in
-            Button("Kill \(p.purpose) model", role: .destructive) {
+            Button("Kill model server", role: .destructive) {
                 LlamaProcesses.kill(pid: p.id)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { refreshProcs() }
                 killTarget = nil
             }
             Button("Cancel", role: .cancel) { killTarget = nil }
         } message: { p in
-            Text("Stops the \(p.purpose.lowercased()) server (\(p.model)) and frees its memory. It relaunches automatically the next time that feature is used.")
+            Text("Stops the \(LlamaServerPool.shared.purposeLabel(forModelPath: p.modelPath ?? "").lowercased()) server (\(p.model)) and frees its memory. It relaunches automatically the next time that feature is used.")
         }
     }
 

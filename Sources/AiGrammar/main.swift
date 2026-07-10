@@ -51,10 +51,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         // Terminate doesn't run. (SIGKILL can't be caught — that's what killStaleServer covers.)
         signal(SIGTERM, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
-        src.setEventHandler { [weak self] in
+        src.setEventHandler {
             MainActor.assumeIsolated {   // the source fires on the main queue
-                self?.rewriteController.shutdown(); self?.aiSpellChecker.shutdown()
-                self?.chatController.shutdown(); NSApp.terminate(nil)
+                LlamaServerPool.shared.stopAll(); NSApp.terminate(nil)
             }
         }
         src.resume()
@@ -127,9 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
-        rewriteController.shutdown()  // stop any warm llama-server
-        aiSpellChecker.shutdown()     // stop the spell-check server too
-        chatController.shutdown()     // stop the chat server too
+        LlamaServerPool.shared.stopAll()   // stop all shared llama-servers
     }
 
     /// Clicking the Dock icon (or reopening) brings the control window back instead of doing nothing.

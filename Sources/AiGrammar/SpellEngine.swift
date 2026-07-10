@@ -8,6 +8,9 @@ struct SpellIssue {
     let word: String
     let guesses: [String]
     let disposition: Disposition
+    /// Which of `guesses` came from the AI model (for the ⋅ brain badge in the popover). Empty for a
+    /// pure dictionary issue.
+    var aiGuesses: Set<String> = []
 
     /// Best replacement: the curated high-confidence correction if any, else the spellchecker's
     /// top guess.

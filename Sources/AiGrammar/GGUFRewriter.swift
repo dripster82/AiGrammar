@@ -7,7 +7,6 @@ final class GGUFRewriter: RewriteEngine {
     var displayName: String { "Local model · \(modelName) (llama.cpp)" }
     var isLocalModel: Bool { true }
 
-    private let server = LlamaServer()
     private let modelPath: String
     private let modelName: String
     private let params: InferenceParams
@@ -18,19 +17,20 @@ final class GGUFRewriter: RewriteEngine {
         self.params = params
     }
 
-    func shutdown() { server.stop() }
+    func shutdown() { Task { await LlamaServerPool.shared.release(purpose: "rewrite") } }
 
     func rewrite(_ text: String, instruction: RewriteInstruction,
                  systemPrompt: String) -> AsyncStream<String> {
         AsyncStream { continuation in
             let task = Task {
                 do {
-                    try await server.ensureRunning(modelPath: modelPath,
-                                                   reasoningOff: params.reasoningEffort == "none")
+                    let port = try await LlamaServerPool.shared.ensureRunning(
+                        purpose: "rewrite", modelPath: modelPath,
+                        reasoningOff: params.reasoningEffort == "none")
                     Log.write("[rewrite] llama.cpp: \(instruction.id) on \(text.count) chars")
                     AIDebugLog.shared.begin(engine: "llama.cpp · \(modelName)", instruction: instruction.id)
 
-                    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!)
+                    var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
                     request.httpMethod = "POST"
                     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
                     let body = params.requestBody(messages: [

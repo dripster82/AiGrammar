@@ -232,7 +232,7 @@ private struct SuggestionView: View {
         for g in ([issue.topGuess].compactMap { $0 } + issue.guesses) where seen.insert(g).inserted
         {
             out.append(g)
-            if out.count == 3 { break }
+            if out.count == 5 { break }
         }
         return out
     }
@@ -252,14 +252,23 @@ private struct SuggestionView: View {
                 .help("Close (the word can appear again)")
             }
             ForEach(choices, id: \.self) { guess in
+                let isAI = issue.aiGuesses.contains(guess)
                 Button {
                     apply(guess)
                 } label: {
-                    HStack {
+                    HStack(spacing: 6) {
                         Text(guess)
                         Spacer()
+                        if isAI {
+                            Image(systemName: "brain")
+                                .font(.caption2).foregroundStyle(.purple)
+                                .help("Suggested by the AI model")
+                        }
                         Image(systemName: "return").font(.caption2).foregroundStyle(.secondary)
                     }
+                    .padding(.horizontal, 6).padding(.vertical, 3)
+                    .background(isAI ? Color.purple.opacity(0.12) : .clear,
+                                in: RoundedRectangle(cornerRadius: 5))
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)

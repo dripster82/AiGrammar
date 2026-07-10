@@ -13,10 +13,9 @@ import FoundationModels
 /// existing suggestion/review/undo pipeline, supplementing the instant `NSSpellChecker` pass.
 final class AISpellChecker {
     private let models: ModelManager
-    private let server = LlamaServer(role: "spell")
 
     init(models: ModelManager) { self.models = models }
-    func shutdown() { server.stop() }
+    func shutdown() { Task { await LlamaServerPool.shared.release(purpose: "spell") } }
 
     // The structured shape the model must return.
     private struct AIError: Decodable { let word: String; let suggestions: [String] }
@@ -100,8 +99,9 @@ final class AISpellChecker {
         let name = (modelPath as NSString).lastPathComponent
         do {
             AIDebugLog.shared.begin(engine: "spell · \(name)", instruction: "spellcheck")
-            try await server.ensureRunning(modelPath: modelPath, reasoningOff: reasoning == "none")
-            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!)
+            let port = try await LlamaServerPool.shared.ensureRunning(
+                purpose: "spell", modelPath: modelPath, reasoningOff: reasoning == "none")
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             request.timeoutInterval = 60   // large models are slow — don't time out prematurely
@@ -229,7 +229,7 @@ final class AISpellChecker {
                 if !overlaps && isWholeWord(found, in: ns) {
                     used.append(found)
                     issues.append(SpellIssue(range: found, word: word, guesses: suggestions,
-                                             disposition: .suggest))
+                                             disposition: .suggest, aiGuesses: Set(suggestions)))
                     break
                 }
                 from = found.location + max(found.length, 1)

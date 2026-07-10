@@ -59,7 +59,8 @@ final class HealthCheck: ObservableObject {
         let procs = LlamaProcesses.sample()
         for p in procs {
             let modelName = p.modelPath.map { models.modelDisplay(forPath: $0).name } ?? p.model
-            let name = "\(p.purpose) · \(modelName)"
+            let purpose = LlamaServerPool.shared.purposeLabel(forModelPath: p.modelPath ?? "")
+            let name = "\(purpose) · \(modelName)"
             guard let port = p.port else { set(name, .warn, "Couldn't read the server port"); continue }
             set(name, .running, "Sending a test prompt…")
             let (status, detail) = await pingPort(port)

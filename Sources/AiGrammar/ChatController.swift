@@ -22,7 +22,6 @@ final class ChatController: ObservableObject {
 
     private let models: ModelManager
     private let params: InferenceParams
-    private let server = LlamaServer(role: "chat")
     private var task: Task<Void, Never>?
 
     #if canImport(FoundationModels)
@@ -38,7 +37,7 @@ final class ChatController: ObservableObject {
         modelId = saved.isEmpty ? defaultModelId : saved
     }
 
-    func shutdown() { task?.cancel(); server.stop() }
+    func shutdown() { task?.cancel(); Task { await LlamaServerPool.shared.release(purpose: "chat") } }
 
     /// Available chat engines: Apple on-device (if available) + each ready local model.
     var engineOptions: [(id: String, name: String)] {
@@ -93,8 +92,9 @@ final class ChatController: ObservableObject {
             append("[no model file for \(modelId)]", to: idx); return
         }
         do {
-            try await server.ensureRunning(modelPath: path, reasoningOff: params.reasoningEffort == "none")
-            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!)
+            let port = try await LlamaServerPool.shared.ensureRunning(
+                purpose: "chat", modelPath: path, reasoningOff: params.reasoningEffort == "none")
+            var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
             var msgs: [[String: String]] = [["role": "system", "content": Self.systemPrompt]]

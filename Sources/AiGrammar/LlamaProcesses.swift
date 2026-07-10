@@ -12,18 +12,6 @@ struct LlamaProc: Identifiable {
     let port: Int?         // localhost port (from --port), so we can ping the live server
     let modelPath: String? // full path from the -m argument (to look up the model's stored detail)
     let model: String      // gguf filename (fallback label)
-    let role: String?      // "rewrite" | "spell" | "chat" (from the pidfile), else nil
-
-    /// Friendly purpose label for the role.
-    var purpose: String {
-        switch role {
-        case "rewrite": return "Rewrite"
-        case "spell": return "Spell check"
-        case "chat": return "Chat"
-        case .some(let r): return r.capitalized
-        case nil: return "Unknown"
-        }
-    }
 
     /// Human-readable running time, e.g. "42s", "3m 12s", "1h 5m".
     var uptime: String { Self.formatUptime(uptimeSec) }
@@ -40,7 +28,6 @@ enum LlamaProcesses {
     /// Snapshot the running `llama-server` processes. Call off the main thread — it spawns `ps`.
     static func sample() -> [LlamaProc] {
         guard let out = run("/bin/ps", ["-axo", "pid=,pcpu=,rss=,etime=,command="]) else { return [] }
-        let roles = pidRoles()
         var procs: [LlamaProc] = []
         for line in out.split(separator: "\n") {
             guard line.contains("llama-server") else { continue }
@@ -60,8 +47,7 @@ enum LlamaProcesses {
                                    uptimeSec: parseEtime(String(parts[3])),
                                    port: portArg(from: command),
                                    modelPath: mPath,
-                                   model: mPath.map { ($0 as NSString).lastPathComponent } ?? "(unknown model)",
-                                   role: roles[pid]))
+                                   model: mPath.map { ($0 as NSString).lastPathComponent } ?? "(unknown model)"))
         }
         return procs.sorted { $0.cpu > $1.cpu }
     }
@@ -74,23 +60,6 @@ enum LlamaProcesses {
             if Darwin.kill(pid, 0) == 0 { Darwin.kill(pid, SIGKILL) }
         }
         Log.write("[llama] killed server pid \(pid) from Diagnostics")
-    }
-
-    /// Map each running server's pid to its role, read from the `llama-server-<role>.pid` files.
-    private static func pidRoles() -> [Int32: String] {
-        let dir = ModelManager.modelsDirectory.deletingLastPathComponent()
-        guard let files = try? FileManager.default.contentsOfDirectory(
-            at: dir, includingPropertiesForKeys: nil) else { return [:] }
-        var map: [Int32: String] = [:]
-        for f in files where f.lastPathComponent.hasPrefix("llama-server-") && f.pathExtension == "pid" {
-            let role = f.deletingPathExtension().lastPathComponent
-                .replacingOccurrences(of: "llama-server-", with: "")
-            if let s = try? String(contentsOf: f, encoding: .utf8),
-               let pid = Int32(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
-                map[pid] = role
-            }
-        }
-        return map
     }
 
     /// Pull the `--port <n>` value out of the launch command.
