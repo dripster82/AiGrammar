@@ -768,6 +768,7 @@ private struct DiagnosticsPage: View {
     @AppStorage("log.aiResponse") private var logAIResponse = true
 
     @State private var procs: [LlamaProc] = []
+    @State private var killTarget: LlamaProc?
     private let procTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -878,22 +879,37 @@ private struct DiagnosticsPage: View {
                             Text(p.model).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                         }
                         Spacer()
-                        Text(String(format: "%.0f%% CPU", p.cpu))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Text(String(format: "%.0f MB", p.memMB))
-                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Button(role: .destructive) {
-                            LlamaProcesses.kill(pid: p.id)
-                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { refreshProcs() }
-                        } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.plain).foregroundStyle(.red)
-                            .help("Kill this model server (it relaunches automatically next time it's used)")
+                        VStack(alignment: .trailing, spacing: 1) {
+                            Text(String(format: "%.0f%% CPU · %.0f MB", p.cpu, p.memMB))
+                                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            Text("up \(p.uptime)")
+                                .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                        }
+                        Button(role: .destructive) { killTarget = p } label: {
+                            Image(systemName: "xmark.circle.fill")
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.red)
+                        .help("Kill this model server (it relaunches automatically next time it's used)")
                     }
                     .padding(.vertical, 2)
                 }
                 Text("Each rewrite / spell-check / chat model runs its own llama-server. Killing one frees its memory; it relaunches on next use.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
+        }
+        .confirmationDialog(
+            "Kill this model server?",
+            isPresented: Binding(get: { killTarget != nil }, set: { if !$0 { killTarget = nil } }),
+            presenting: killTarget
+        ) { p in
+            Button("Kill \(p.purpose) model", role: .destructive) {
+                LlamaProcesses.kill(pid: p.id)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { refreshProcs() }
+                killTarget = nil
+            }
+            Button("Cancel", role: .cancel) { killTarget = nil }
+        } message: { p in
+            Text("Stops the \(p.purpose.lowercased()) server (\(p.model)) and frees its memory. It relaunches automatically the next time that feature is used.")
         }
     }
 

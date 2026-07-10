@@ -8,6 +8,7 @@ struct LlamaProc: Identifiable {
     let id: Int32          // pid
     let cpu: Double        // percent
     let memMB: Double      // resident size
+    let uptimeSec: Int     // elapsed running time in seconds
     let model: String      // gguf filename (from the -m argument)
     let role: String?      // "rewrite" | "spell" | "chat" (from the pidfile), else nil
 
@@ -21,28 +22,37 @@ struct LlamaProc: Identifiable {
         case nil: return "Unknown"
         }
     }
+
+    /// Human-readable running time, e.g. "42s", "3m 12s", "1h 5m".
+    var uptime: String {
+        let s = uptimeSec
+        if s < 60 { return "\(s)s" }
+        if s < 3600 { return "\(s / 60)m \(s % 60)s" }
+        return "\(s / 3600)h \((s % 3600) / 60)m"
+    }
 }
 
 enum LlamaProcesses {
     /// Snapshot the running `llama-server` processes. Call off the main thread — it spawns `ps`.
     static func sample() -> [LlamaProc] {
-        guard let out = run("/bin/ps", ["-axo", "pid=,pcpu=,rss=,command="]) else { return [] }
+        guard let out = run("/bin/ps", ["-axo", "pid=,pcpu=,rss=,etime=,command="]) else { return [] }
         let roles = pidRoles()
         var procs: [LlamaProc] = []
         for line in out.split(separator: "\n") {
             guard line.contains("llama-server") else { continue }
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            // pid  pcpu  rss  command...
-            let parts = trimmed.split(separator: " ", maxSplits: 3, omittingEmptySubsequences: true)
-            guard parts.count == 4,
+            // pid  pcpu  rss  etime  command... (etime = macOS elapsed time, e.g. "03:12" / "1:05:22")
+            let parts = trimmed.split(separator: " ", maxSplits: 4, omittingEmptySubsequences: true)
+            guard parts.count == 5,
                   let pid = Int32(parts[0]), let cpu = Double(parts[1]), let rssKB = Double(parts[2])
             else { continue }
-            let command = String(parts[3])
+            let command = String(parts[4])
             // Only real llama-server processes: the executable (first token) must be the binary,
             // not some other process that merely mentions "llama-server" in its arguments.
             guard let exe = command.split(separator: " ").first,
                   exe.hasSuffix("llama-server") || exe == "llama-server" else { continue }
             procs.append(LlamaProc(id: pid, cpu: cpu, memMB: rssKB / 1024.0,
+                                   uptimeSec: parseEtime(String(parts[3])),
                                    model: modelName(from: command), role: roles[pid]))
         }
         return procs.sorted { $0.cpu > $1.cpu }
@@ -73,6 +83,18 @@ enum LlamaProcesses {
             }
         }
         return map
+    }
+
+    /// Parse macOS `ps` etime ("[[dd-]hh:]mm:ss") into seconds.
+    private static func parseEtime(_ s: String) -> Int {
+        var days = 0
+        var rest = Substring(s)
+        if let dash = s.firstIndex(of: "-") {
+            days = Int(s[s.startIndex ..< dash]) ?? 0
+            rest = s[s.index(after: dash)...]
+        }
+        let secs = rest.split(separator: ":").reduce(0) { $0 * 60 + (Int($1) ?? 0) }
+        return days * 86400 + secs
     }
 
     /// Pull the gguf filename out of the launch command's `-m <path>` argument.
