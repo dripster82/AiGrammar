@@ -507,45 +507,44 @@ final class ComposerPipeline {
         Log.write("undo: \"\(correction.corrected)\" → \"\(correction.original)\" (now ignored)")
     }
 
-    /// Replace a character range, picking the write strategy from the field's capabilities:
-    /// - Native fields that allow targeted `AXSelectedText` → replace JUST the word (no whole-text
-    ///   churn), then put the caret back where the user was. Synchronous.
-    /// - Otherwise (Slack's Quill, many web fields) → whole-text `setValue` with an async caret
-    ///   restore (Quill applies the write asynchronously).
+    /// Replace a character range. Prefer whole-text `setValue` — the proven path that works in Slack,
+    /// browsers, and native fields. (Slack's Quill reports `AXSelectedText` as settable but silently
+    /// ignores targeted writes, so we can't trust that flag.) Only fields that truly can't `setValue`
+    /// fall back to a targeted `setSelectedText`.
     @discardableResult
     private func replace(range: NSRange, with replacement: String,
                          in element: AXUIElement, currentText: String) -> Bool {
         let ns = currentText as NSString
         guard range.location + range.length <= ns.length else { return false }
-        // Where is the user's caret now? Keep them there, shifted by the length change — don't yank it
-        // to the corrected word.
+        // Keep the user's caret where it is, shifted by the length change — don't yank it to the word.
         let priorCaret = AX.range(element, kAXSelectedTextRangeAttribute as String)?.location
         let repLen = (replacement as NSString).length
         let caret = adjustedCaret(prior: priorCaret, range: range, repLen: repLen,
                                   newLength: ns.length - range.length + repLen)
         suppress()
 
-        // Targeted in-place replacement for native fields (best: no churn, no cursor disruption).
-        if AX.isSettable(element, kAXSelectedTextAttribute as String) {
-            _ = AX.setSelectedRange(element, location: range.location, length: range.length)
-            if AX.setSelectedText(element, replacement) == .success {
-                _ = AX.setSelectedRange(element, location: caret, length: 0)
-                return true
+        if AX.isSettable(element, kAXValueAttribute as String) {
+            // Whole-text write (Slack / browser / native fields). Quill applies it asynchronously.
+            let newText = ns.replacingCharacters(in: range, with: replacement)
+            guard AX.setValue(element, newText) == .success else {
+                Log.write("replace failed: setValue rejected")
+                return false
             }
-            // fall through to whole-text if the targeted write didn't take
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                if AX.string(element, kAXValueAttribute as String) == newText {
+                    _ = AX.setSelectedRange(element, location: caret, length: 0)
+                }
+            }
+            return true
         }
 
-        // Whole-text write (Slack / web): replace everything, then restore the caret after it settles.
-        let newText = ns.replacingCharacters(in: range, with: replacement)
-        guard AX.setValue(element, newText) == .success else {
-            Log.write("replace failed: setValue rejected")
+        // Fallback: targeted edit for fields that expose only AXSelectedText (e.g. some NSTextViews).
+        _ = AX.setSelectedRange(element, location: range.location, length: range.length)
+        guard AX.setSelectedText(element, replacement) == .success else {
+            Log.write("replace failed: neither setValue nor setSelectedText available")
             return false
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-            if AX.string(element, kAXValueAttribute as String) == newText {
-                _ = AX.setSelectedRange(element, location: caret, length: 0)
-            }
-        }
+        _ = AX.setSelectedRange(element, location: caret, length: 0)
         return true
     }
 
