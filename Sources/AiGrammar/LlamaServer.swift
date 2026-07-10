@@ -9,6 +9,10 @@ final class LlamaServer {
     private(set) var port = 0
     private var loadedModelPath: String?
 
+    /// The pid of the running process, or nil if not running — lets the pool match `ps` rows to the
+    /// servers it actually owns (so orphans can be told apart).
+    var currentPid: Int32? { (process?.isRunning == true) ? process?.processIdentifier : nil }
+
     /// Distinguishes concurrent servers (e.g. the rewrite model and a separate AI-spellcheck model)
     /// so each has its own pidfile and neither clobbers the other.
     private let role: String

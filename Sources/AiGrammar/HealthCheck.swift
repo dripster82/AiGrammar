@@ -59,7 +59,7 @@ final class HealthCheck: ObservableObject {
         let procs = LlamaProcesses.sample()
         for p in procs {
             let modelName = p.modelPath.map { models.modelDisplay(forPath: $0).name } ?? p.model
-            let purpose = LlamaServerPool.shared.purposeLabel(forModelPath: p.modelPath ?? "")
+            let purpose = LlamaServerPool.shared.purposeLabel(pid: p.id) ?? "Untracked server"
             let name = "\(purpose) · \(modelName)"
             guard let port = p.port else { set(name, .warn, "Couldn't read the server port"); continue }
             set(name, .running, "Sending a test prompt…")

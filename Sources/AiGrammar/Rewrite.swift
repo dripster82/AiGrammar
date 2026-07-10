@@ -56,15 +56,17 @@ final class RewriteController {
         case .local(let model):
             let path = models.path(forID: model.id) ?? ""
             if let cached = ggufCache, cached.path == path { return cached.engine }
-            ggufCache?.engine.shutdown()
+            // Don't release the old server here — the new engine's ensureRunning re-points the pool
+            // and stops the now-unused server. Releasing here would race that and could kill the wrong
+            // one (or leave a stray process).
             let engine = GGUFRewriter(modelPath: path, modelName: model.name, params: params)
             ggufCache = (path, engine)
             return engine
         }
     }
 
-    /// Stop any warm llama-server (called on app quit).
-    func shutdown() { ggufCache?.engine.shutdown() }
+    /// Called on app quit (the pool is stopped centrally, so nothing to do per-engine now).
+    func shutdown() {}
 
     /// Triggered by ⌃⌘R or the badge menu. Rewrites the selection — or, if nothing is selected,
     /// the entire composer message. `preset` (from ⌃⌘1–4) runs that rewrite immediately.

@@ -55,10 +55,16 @@ final class LlamaServerPool {
         }.sorted()
     }
 
-    /// "Rewrite + Spell check" style label for the purposes using a given model path (Diagnostics).
-    func purposeLabel(forModelPath modelPath: String) -> String {
-        let names = purposes(forModelPath: modelPath).map(Self.label)
-        return names.isEmpty ? "Model server" : names.joined(separator: " + ")
+    /// Purposes served by the process with this pid, or nil if the pool doesn't own it (an orphan).
+    func purposes(pid: Int32) -> [String]? {
+        guard let entry = servers.first(where: { $0.value.currentPid == pid }) else { return nil }
+        return purposeModel.compactMap { $0.value == entry.key ? $0.key : nil }.sorted()
+    }
+
+    /// "Rewrite + Spell check" style label for the server with this pid, or nil for an orphan.
+    func purposeLabel(pid: Int32) -> String? {
+        guard let ps = purposes(pid: pid) else { return nil }
+        return ps.isEmpty ? "Model server" : ps.map(Self.label).joined(separator: " + ")
     }
 
     static func label(_ purpose: String) -> String {

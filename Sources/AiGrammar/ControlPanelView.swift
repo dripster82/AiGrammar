@@ -909,12 +909,13 @@ private struct DiagnosticsPage: View {
             } else {
                 ForEach(procs) { p in
                     let info = p.modelPath.map { models.modelDisplay(forPath: $0) }
-                    let purpose = LlamaServerPool.shared.purposeLabel(forModelPath: p.modelPath ?? "")
+                    let tracked = LlamaServerPool.shared.purposeLabel(pid: p.id)   // nil = orphan
                     HStack(spacing: 8) {
-                        Circle().fill(.green).frame(width: 7, height: 7)
+                        Circle().fill(tracked == nil ? .orange : .green).frame(width: 7, height: 7)
                         VStack(alignment: .leading, spacing: 1) {
                             HStack(spacing: 6) {
-                                Text(purpose).font(.callout.weight(.medium))
+                                Text(tracked ?? "Untracked server (orphan)").font(.callout.weight(.medium))
+                                    .foregroundStyle(tracked == nil ? .orange : .primary)
                                 Text("pid \(p.id)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                             }
                             Text(info?.name ?? p.model).font(.caption.weight(.medium))
@@ -957,7 +958,7 @@ private struct DiagnosticsPage: View {
             }
             Button("Cancel", role: .cancel) { killTarget = nil }
         } message: { p in
-            Text("Stops the \(LlamaServerPool.shared.purposeLabel(forModelPath: p.modelPath ?? "").lowercased()) server (\(p.model)) and frees its memory. It relaunches automatically the next time that feature is used.")
+            Text("Stops the \((LlamaServerPool.shared.purposeLabel(pid: p.id) ?? "orphaned").lowercased()) server (\(p.model)) and frees its memory. A tracked server relaunches next time its feature is used.")
         }
     }
 

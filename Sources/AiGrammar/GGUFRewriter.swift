@@ -17,7 +17,7 @@ final class GGUFRewriter: RewriteEngine {
         self.params = params
     }
 
-    func shutdown() { Task { await LlamaServerPool.shared.release(purpose: "rewrite") } }
+    func shutdown() {}   // server lifecycle is managed by LlamaServerPool
 
     func rewrite(_ text: String, instruction: RewriteInstruction,
                  systemPrompt: String) -> AsyncStream<String> {

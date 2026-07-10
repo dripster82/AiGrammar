@@ -15,7 +15,7 @@ final class AISpellChecker {
     private let models: ModelManager
 
     init(models: ModelManager) { self.models = models }
-    func shutdown() { Task { await LlamaServerPool.shared.release(purpose: "spell") } }
+    func shutdown() {}   // server lifecycle is managed by LlamaServerPool
 
     // The structured shape the model must return.
     private struct AIError: Decodable { let word: String; let suggestions: [String] }

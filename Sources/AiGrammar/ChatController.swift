@@ -37,7 +37,7 @@ final class ChatController: ObservableObject {
         modelId = saved.isEmpty ? defaultModelId : saved
     }
 
-    func shutdown() { task?.cancel(); Task { await LlamaServerPool.shared.release(purpose: "chat") } }
+    func shutdown() { task?.cancel() }   // server lifecycle is managed by LlamaServerPool
 
     /// Available chat engines: Apple on-device (if available) + each ready local model.
     var engineOptions: [(id: String, name: String)] {
