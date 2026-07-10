@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 /// A running `llama-server` process and its live resource use, for the Diagnostics page. Sampled via
@@ -8,12 +9,25 @@ struct LlamaProc: Identifiable {
     let cpu: Double        // percent
     let memMB: Double      // resident size
     let model: String      // gguf filename (from the -m argument)
+    let role: String?      // "rewrite" | "spell" | "chat" (from the pidfile), else nil
+
+    /// Friendly purpose label for the role.
+    var purpose: String {
+        switch role {
+        case "rewrite": return "Rewrite"
+        case "spell": return "Spell check"
+        case "chat": return "Chat"
+        case .some(let r): return r.capitalized
+        case nil: return "Unknown"
+        }
+    }
 }
 
 enum LlamaProcesses {
     /// Snapshot the running `llama-server` processes. Call off the main thread — it spawns `ps`.
     static func sample() -> [LlamaProc] {
         guard let out = run("/bin/ps", ["-axo", "pid=,pcpu=,rss=,command="]) else { return [] }
+        let roles = pidRoles()
         var procs: [LlamaProc] = []
         for line in out.split(separator: "\n") {
             guard line.contains("llama-server") else { continue }
@@ -29,9 +43,36 @@ enum LlamaProcesses {
             guard let exe = command.split(separator: " ").first,
                   exe.hasSuffix("llama-server") || exe == "llama-server" else { continue }
             procs.append(LlamaProc(id: pid, cpu: cpu, memMB: rssKB / 1024.0,
-                                   model: modelName(from: command)))
+                                   model: modelName(from: command), role: roles[pid]))
         }
         return procs.sorted { $0.cpu > $1.cpu }
+    }
+
+    /// Terminate a llama-server by pid (SIGTERM, then SIGKILL if it lingers). Called from the
+    /// Diagnostics "Kill" button. The owning `LlamaServer` will simply relaunch it on next use.
+    static func kill(pid: Int32) {
+        Darwin.kill(pid, SIGTERM)
+        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) {
+            if Darwin.kill(pid, 0) == 0 { Darwin.kill(pid, SIGKILL) }
+        }
+        Log.write("[llama] killed server pid \(pid) from Diagnostics")
+    }
+
+    /// Map each running server's pid to its role, read from the `llama-server-<role>.pid` files.
+    private static func pidRoles() -> [Int32: String] {
+        let dir = ModelManager.modelsDirectory.deletingLastPathComponent()
+        guard let files = try? FileManager.default.contentsOfDirectory(
+            at: dir, includingPropertiesForKeys: nil) else { return [:] }
+        var map: [Int32: String] = [:]
+        for f in files where f.lastPathComponent.hasPrefix("llama-server-") && f.pathExtension == "pid" {
+            let role = f.deletingPathExtension().lastPathComponent
+                .replacingOccurrences(of: "llama-server-", with: "")
+            if let s = try? String(contentsOf: f, encoding: .utf8),
+               let pid = Int32(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                map[pid] = role
+            }
+        }
+        return map
     }
 
     /// Pull the gguf filename out of the launch command's `-m <path>` argument.

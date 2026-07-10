@@ -859,7 +859,8 @@ private struct DiagnosticsPage: View {
         .onReceive(procTimer) { _ in refreshProcs() }
     }
 
-    /// #2 — live CPU/RAM of the running local model servers (sampled via `ps`, off the main thread).
+    /// #2 — live CPU/RAM of the running local model servers (sampled via `ps`, off the main thread),
+    /// labelled by purpose (rewrite / spell / chat) with a per-process kill button.
     private var runningModelsCard: some View {
         Card(title: "Running models", icon: "cpu") {
             if procs.isEmpty {
@@ -869,16 +870,28 @@ private struct DiagnosticsPage: View {
                 ForEach(procs) { p in
                     HStack(spacing: 8) {
                         Circle().fill(.green).frame(width: 7, height: 7)
-                        Text(p.model).font(.callout).lineLimit(1)
+                        VStack(alignment: .leading, spacing: 1) {
+                            HStack(spacing: 6) {
+                                Text(p.purpose).font(.callout.weight(.medium))
+                                Text("pid \(p.id)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                            }
+                            Text(p.model).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        }
                         Spacer()
                         Text(String(format: "%.0f%% CPU", p.cpu))
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         Text(String(format: "%.0f MB", p.memMB))
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Text("pid \(p.id)").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                        Button(role: .destructive) {
+                            LlamaProcesses.kill(pid: p.id)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { refreshProcs() }
+                        } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain).foregroundStyle(.red)
+                            .help("Kill this model server (it relaunches automatically next time it's used)")
                     }
+                    .padding(.vertical, 2)
                 }
-                Text("Each rewrite / spell-check / chat model runs its own llama-server. Change or disable models to free memory.")
+                Text("Each rewrite / spell-check / chat model runs its own llama-server. Killing one frees its memory; it relaunches on next use.")
                     .font(.caption2).foregroundStyle(.tertiary)
             }
         }
