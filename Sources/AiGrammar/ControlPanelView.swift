@@ -141,6 +141,16 @@ private struct AISpellPage: View {
 
     var body: some View {
         VStack(spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "flask").foregroundStyle(.orange)
+                Text("Experimental — AI spell check is a work in progress; results, speed, and cursor behaviour may be unreliable.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
+            }
+            .padding(10)
+            .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.orange.opacity(0.35)))
+
             Card(title: "AI spell check", icon: "text.magnifyingglass") {
                 Toggle("Enable context-aware AI spell check", isOn: $settings.aiSpellEnabled)
                 Text("Uses a model to catch real-word errors the dictionary misses (their/there, form/from). Supplements the instant dictionary check.")
