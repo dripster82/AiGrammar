@@ -65,14 +65,24 @@ final class LlamaServer {
     static var isInstalled: Bool { serverBinaryPath() != nil }
 
     private var loadedReasoningOff = false
+    /// True only once /health has confirmed the model finished loading. A running process is NOT
+    /// enough — a large model can still be loading (requests get a 503), so callers must wait.
+    private var modelReady = false
 
-    /// Ensure a server is running for `modelPath`. Reuses the running one unless the model OR the
-    /// reasoning-off setting changed (reasoning is a server-launch flag, not a request parameter).
+    /// Ensure a server is running AND the model is loaded for `modelPath`. Reuses the running one
+    /// unless the model OR the reasoning-off setting changed (reasoning is a server-launch flag).
     func ensureRunning(modelPath: String, reasoningOff: Bool) async throws {
         if let p = process, p.isRunning, loadedModelPath == modelPath, loadedReasoningOff == reasoningOff {
+            if modelReady { return }
+            // Running but not yet confirmed loaded (e.g. the launch health-wait was cancelled by the
+            // user typing on). Wait for it here instead of firing a request at a loading server.
+            try await waitForHealth(timeout: 180)
+            modelReady = true
+            Log.write("[llama] model ready on :\(port)")
             return
         }
         stop()
+        modelReady = false
         guard let binary = Self.serverBinaryPath() else {
             throw NSError(domain: "AiGrammar", code: 1, userInfo: [NSLocalizedDescriptionKey:
                 "llama-server not found — install llama.cpp (see docs/llama-setup.md) or set its path in Settings."])
@@ -94,23 +104,28 @@ final class LlamaServer {
         loadedReasoningOff = reasoningOff
         try? "\(proc.processIdentifier)".write(to: pidFileURL, atomically: true, encoding: .utf8)
         Log.write("[llama] started llama-server pid \(proc.processIdentifier) on :\(chosenPort) for \((modelPath as NSString).lastPathComponent)\(reasoningOff ? " (reasoning off)" : "")")
-        try await waitForHealth(timeout: 60)
+        try await waitForHealth(timeout: 180)   // large models can take a while to load
+        modelReady = true
         Log.write("[llama] server healthy on :\(chosenPort)")
     }
 
+    /// Poll /health until it reports the model is loaded (HTTP 200). Cancellation-safe (throws
+    /// CancellationError so a superseded check aborts instead of busy-looping to the deadline).
     private func waitForHealth(timeout: TimeInterval) async throws {
         let deadline = Date().addingTimeInterval(timeout)
         let url = URL(string: "http://127.0.0.1:\(port)/health")!
         while Date() < deadline {
+            try Task.checkCancellation()
             if process?.isRunning != true {
                 throw NSError(domain: "AiGrammar", code: 2, userInfo: [NSLocalizedDescriptionKey:
                     "llama-server exited during startup."])
             }
+            // /health returns 503 while the model is still loading, 200 once it's ready.
             if let (_, response) = try? await URLSession.shared.data(from: url),
                let http = response as? HTTPURLResponse, http.statusCode == 200 {
                 return
             }
-            try? await Task.sleep(nanoseconds: 400_000_000)
+            try await Task.sleep(nanoseconds: 500_000_000)
         }
         throw NSError(domain: "AiGrammar", code: 3, userInfo: [NSLocalizedDescriptionKey:
             "llama-server did not become ready (model may be too large or still loading)."])
@@ -129,6 +144,7 @@ final class LlamaServer {
         try? FileManager.default.removeItem(at: pidFileURL)
         process = nil
         loadedModelPath = nil
+        modelReady = false
         port = 0
     }
 }

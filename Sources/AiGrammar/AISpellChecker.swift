@@ -104,7 +104,7 @@ final class AISpellChecker {
             var request = URLRequest(url: URL(string: "http://127.0.0.1:\(server.port)/v1/chat/completions")!)
             request.httpMethod = "POST"
             request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.timeoutInterval = 30
+            request.timeoutInterval = 60   // large models are slow — don't time out prematurely
             let schema: [String: Any] = [
                 "type": "object",
                 "properties": [
@@ -140,7 +140,11 @@ final class AISpellChecker {
             // request-level reasoning_effort for models that support it.
             if ["low", "medium", "high"].contains(reasoning) { body["reasoning_effort"] = reasoning }
             request.httpBody = try JSONSerialization.data(withJSONObject: body)
-            let (data, _) = try await URLSession.shared.data(for: request)
+            let (data, resp) = try await URLSession.shared.data(for: request)
+            if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
+                Log.write("[aispell] server returned HTTP \(http.statusCode) (model loading or busy) — skipping")
+                return nil
+            }
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let choices = json["choices"] as? [[String: Any]],
                   let content = (choices.first?["message"] as? [String: Any])?["content"] as? String
