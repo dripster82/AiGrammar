@@ -46,7 +46,7 @@ struct ControlPanelView: View {
         case .chat: ChatPage(chat: chat, models: models)
         case .aiSpell: AISpellPage(settings: settings, models: models)
         case .settings: SettingsPage(settings: settings, models: models, prompts: prompts, params: params)
-        case .diagnostics: DiagnosticsPage(monitor: monitor, models: models)
+        case .diagnostics: DiagnosticsPage(monitor: monitor, models: models, settings: settings, params: params)
         }
     }
 
@@ -740,7 +740,10 @@ private struct ChatBubble: View {
 private struct DiagnosticsPage: View {
     @ObservedObject var monitor: FocusMonitor
     @ObservedObject var models: ModelManager
+    @ObservedObject var settings: Settings
+    @ObservedObject var params: InferenceParams
     @ObservedObject private var aiLog = AIDebugLog.shared
+    @StateObject private var health = HealthCheck()
 
     // Per-channel log toggles (default on; General is always on). Log reads these same keys.
     @AppStorage("log.focus") private var logFocus = true
@@ -759,6 +762,8 @@ private struct DiagnosticsPage: View {
 
     var body: some View {
         VStack(spacing: 14) {
+            healthCheckCard
+
             Card(title: "Accessibility", icon: "lock.shield") {
                 HStack {
                     Circle().fill(monitor.trusted ? .green : .red).frame(width: 8, height: 8)
@@ -844,6 +849,44 @@ private struct DiagnosticsPage: View {
         }
         .onAppear { refreshProcs() }
         .onReceive(procTimer) { _ in refreshProcs() }
+    }
+
+    /// End-to-end health check: environment + a live "reply OK" ping to each configured model.
+    private var healthCheckCard: some View {
+        Card(title: "Health check", icon: "heart.text.square") {
+            HStack {
+                Text("Checks permissions and sends each model a test prompt (expects “OK”). Loads the models, so it can take a moment.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button {
+                    Task { await health.run(monitor: monitor, models: models, settings: settings, params: params) }
+                } label: {
+                    if health.running { ProgressView().controlSize(.small) }
+                    else { Text("Run health check") }
+                }
+                .disabled(health.running)
+            }
+            ForEach(health.items) { item in
+                HStack(spacing: 8) {
+                    if item.status == .running { ProgressView().controlSize(.small).frame(width: 16) }
+                    else { Image(systemName: item.status.symbol).foregroundStyle(color(item.status)).frame(width: 16) }
+                    VStack(alignment: .leading, spacing: 0) {
+                        Text(item.name).font(.callout)
+                        Text(item.detail).font(.caption2).foregroundStyle(.secondary).lineLimit(2)
+                    }
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    private func color(_ s: HealthStatus) -> Color {
+        switch s {
+        case .ok: return .green
+        case .warn: return .orange
+        case .fail: return .red
+        case .running: return .secondary
+        }
     }
 
     /// #2 — live CPU/RAM of the running local model servers (sampled via `ps`, off the main thread),
