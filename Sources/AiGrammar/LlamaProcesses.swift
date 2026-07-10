@@ -24,8 +24,10 @@ struct LlamaProc: Identifiable {
     }
 
     /// Human-readable running time, e.g. "42s", "3m 12s", "1h 5m".
-    var uptime: String {
-        let s = uptimeSec
+    var uptime: String { Self.formatUptime(uptimeSec) }
+
+    static func formatUptime(_ sec: Int) -> String {
+        let s = max(0, sec)
         if s < 60 { return "\(s)s" }
         if s < 3600 { return "\(s / 60)m \(s % 60)s" }
         return "\(s / 3600)h \((s % 3600) / 60)m"
@@ -97,13 +99,19 @@ enum LlamaProcesses {
         return days * 86400 + secs
     }
 
-    /// Pull the gguf filename out of the launch command's `-m <path>` argument.
+    /// Pull the gguf filename out of the launch command's `-m <path>` argument. The path can contain
+    /// spaces (e.g. "…/Application Support/…"), so we take everything after "-m " up to ".gguf"
+    /// rather than splitting on spaces.
     private static func modelName(from command: String) -> String {
-        let tokens = command.split(separator: " ").map(String.init)
-        if let i = tokens.firstIndex(of: "-m"), i + 1 < tokens.count {
-            return (tokens[i + 1] as NSString).lastPathComponent
+        guard let m = command.range(of: "-m ") else { return "(unknown model)" }
+        let after = command[m.upperBound...]
+        if let g = after.range(of: ".gguf") {
+            return (String(after[..<g.upperBound]) as NSString).lastPathComponent
         }
-        return "(unknown model)"
+        if let flag = after.range(of: " --") {          // fallback: up to the next flag
+            return (String(after[..<flag.lowerBound]) as NSString).lastPathComponent
+        }
+        return (String(after) as NSString).lastPathComponent
     }
 
     private static func run(_ path: String, _ args: [String]) -> String? {

@@ -769,6 +769,8 @@ private struct DiagnosticsPage: View {
 
     @State private var procs: [LlamaProc] = []
     @State private var killTarget: LlamaProc?
+    /// Anchored start time per pid (set on first sighting) so uptime ticks up smoothly, not in 2s jumps.
+    @State private var startDates: [Int32: Date] = [:]
     private let procTimer = Timer.publish(every: 2, on: .main, in: .common).autoconnect()
 
     var body: some View {
@@ -882,8 +884,11 @@ private struct DiagnosticsPage: View {
                         VStack(alignment: .trailing, spacing: 1) {
                             Text(String(format: "%.0f%% CPU · %.0f MB", p.cpu, p.memMB))
                                 .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                            Text("up \(p.uptime)")
-                                .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                            TimelineView(.periodic(from: .now, by: 1)) { ctx in
+                                let start = startDates[p.id] ?? ctx.date.addingTimeInterval(-Double(p.uptimeSec))
+                                Text("up \(LlamaProc.formatUptime(Int(ctx.date.timeIntervalSince(start))))")
+                                    .font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                            }
                         }
                         Button(role: .destructive) { killTarget = p } label: {
                             Image(systemName: "xmark.circle.fill")
@@ -916,7 +921,14 @@ private struct DiagnosticsPage: View {
     private func refreshProcs() {
         DispatchQueue.global(qos: .utility).async {
             let s = LlamaProcesses.sample()
-            DispatchQueue.main.async { procs = s }
+            DispatchQueue.main.async {
+                procs = s
+                let now = Date()
+                for p in s where startDates[p.id] == nil {   // anchor a start time once per pid
+                    startDates[p.id] = now.addingTimeInterval(-Double(p.uptimeSec))
+                }
+                startDates = startDates.filter { id, _ in s.contains { $0.id == id } }   // drop gone pids
+            }
         }
     }
 }
