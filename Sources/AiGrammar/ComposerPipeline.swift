@@ -334,8 +334,10 @@ final class ComposerPipeline {
 
     private func applyAICorrection(_ result: AISpellChecker.Result, element: AXUIElement, text: String) {
         // Best path: the model's full corrected message (fixes spacing/splits/word-choice fluently).
-        if let corrected = result.corrected?.trimmingCharacters(in: .whitespacesAndNewlines),
-           !corrected.isEmpty, corrected != text {
+        let corrected = result.corrected?.trimmingCharacters(in: .whitespacesAndNewlines)
+        Log.write("[aispell] auto-correct: corrected=\(corrected == nil ? "nil" : "\(corrected!.count) chars"), "
+                + "\(result.issues.count) issue(s), changed=\(corrected != nil && corrected != text)")
+        if let corrected, !corrected.isEmpty, corrected != text {
             commitWholeMessage(corrected, element: element, original: text,
                                note: "auto-corrected whole message via model 'corrected'")
             return
@@ -370,6 +372,12 @@ final class ComposerPipeline {
             Log.write("[aispell] auto-correct: setValue rejected"); return
         }
         Log.write("[aispell] \(note)")
+        // Whole message changed — put the caret at the end so the user can keep typing.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            if AX.string(element, kAXValueAttribute as String) == newText {
+                _ = AX.setSelectedRange(element, location: (newText as NSString).length, length: 0)
+            }
+        }
         let record = Correction(
             original: original, corrected: newText,
             rangeAfter: NSRange(location: 0, length: (newText as NSString).length),
@@ -494,14 +502,37 @@ final class ComposerPipeline {
         let ns = currentText as NSString
         guard range.location + range.length <= ns.length else { return false }
         let newText = ns.replacingCharacters(in: range, with: replacement)
+
+        // Where is the user's caret RIGHT NOW? Corrections happen behind the cursor while typing, so
+        // we must keep the caret where they are (shifted by the edit's length change) — not yank it
+        // back to the corrected word.
+        let priorCaret = AX.range(element, kAXSelectedTextRangeAttribute as String)?.location
+
         suppress()
         guard AX.setValue(element, newText) == .success else {
             Log.write("replace failed: setValue rejected")
             return false
         }
-        let caret = range.location + (replacement as NSString).length
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            _ = AX.setSelectedRange(element, location: caret, length: 0)
+
+        let repLen = (replacement as NSString).length
+        let delta = repLen - range.length
+        let wordEnd = range.location + range.length
+        let target: Int
+        if let p = priorCaret {
+            if p >= wordEnd { target = p + delta }            // caret after the fix → shift by delta
+            else if p <= range.location { target = p }        // caret before the fix → unchanged
+            else { target = range.location + repLen }         // caret inside the word → end of the fix
+        } else {
+            target = range.location + repLen
+        }
+        let caret = max(0, min(target, (newText as NSString).length))
+
+        // Restore once the async setValue settles — but only if the user hasn't typed since (don't
+        // fight a cursor they've already moved).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            if AX.string(element, kAXValueAttribute as String) == newText {
+                _ = AX.setSelectedRange(element, location: caret, length: 0)
+            }
         }
         return true
     }
