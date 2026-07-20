@@ -665,8 +665,14 @@ private struct ModelTestView: View {
                         if row.judgeReason != nil {
                             Button { toggle(row.id) } label: {
                                 Image(systemName: expanded.contains(row.id) ? "chevron.up" : "chevron.down")
-                                    .font(.caption2)
-                            }.buttonStyle(.plain).foregroundStyle(.secondary)
+                                    .font(.caption.weight(.semibold))
+                                    .frame(width: 26, height: 22)
+                                    .background(Color.purple.opacity(0.12), in: RoundedRectangle(cornerRadius: 5))
+                                    .overlay(RoundedRectangle(cornerRadius: 5).strokeBorder(.purple.opacity(0.35)))
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.purple)
+                            .help("Show the judge's reasoning")
                         }
                     }
                     .frame(alignment: .trailing)
