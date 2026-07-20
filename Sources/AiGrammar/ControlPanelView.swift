@@ -318,6 +318,7 @@ private struct AIModelsPage: View {
     @State private var customLocation = ""
     @State private var llamaPath = UserDefaults.standard.string(forKey: "llamaServerPath") ?? ""
     @State private var llamaInstalled = LlamaServer.isInstalled
+    @State private var showAppleTest = false
 
     private var usingName: String {
         RewriteEngineChoice.resolve(settings.rewriteEngineChoice, models: models).displayName
@@ -356,9 +357,15 @@ private struct AIModelsPage: View {
                         Button("Use") { settings.rewriteEngineChoice = "apple" }
                             .buttonStyle(.borderedProminent).controlSize(.small)
                     }
+                    if status.available {
+                        Button("Test…") { showAppleTest = true }.controlSize(.small)
+                    }
                 }
                 Text("Runs on-device (nothing leaves your Mac), no download to manage. Apple Silicon only.")
                     .font(.caption).foregroundStyle(.secondary)
+            }
+            .sheet(isPresented: $showAppleTest) {
+                ModelTestView(modelId: "apple", modelName: "Apple on-device", models: models)
             }
 
             Card(title: "Local models (llama.cpp)", icon: "square.stack.3d.down.right") {
@@ -521,13 +528,15 @@ private struct ModelRow: View {
 
 // MARK: - Model test
 
-/// A sheet that benchmarks a model against fixed correction test cases, showing prompt / expected /
-/// received / rating per row plus an overall score.
+/// A sheet that benchmarks a model across 4 categories (spelling, clearer, professional, shorter),
+/// showing prompt / expected / received / score / time per case, an optional Apple-Intelligence
+/// quality rating, and category + overall summaries.
 private struct ModelTestView: View {
     let modelId: String
     let modelName: String
     @ObservedObject var models: ModelManager
     @StateObject private var tester: ModelTester
+    @State private var useJudge = ModelTester.judgeAvailable
     @Environment(\.dismiss) private var dismiss
 
     init(modelId: String, modelName: String, models: ModelManager) {
@@ -539,22 +548,19 @@ private struct ModelTestView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
+            HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Test model").font(.headline)
                     Text(modelName).font(.caption).foregroundStyle(.secondary)
-                }
-                Spacer()
-                if let overall = tester.overall {
-                    VStack(alignment: .trailing, spacing: 0) {
-                        Text("\(Int(overall * 100))%")
-                            .font(.title2.weight(.bold)).foregroundStyle(color(overall))
-                        Text("Overall · \(ModelTester.label(overall))")
-                            .font(.caption2).foregroundStyle(.secondary)
+                    if ModelTester.judgeAvailable {
+                        Toggle("Rate quality with Apple Intelligence", isOn: $useJudge)
+                            .toggleStyle(.checkbox).font(.caption).disabled(tester.running)
                     }
                 }
+                Spacer()
+                summary
                 Button(tester.running ? "Running…" : "Run test") {
-                    Task { await tester.run(modelId: modelId) }
+                    Task { await tester.run(modelId: modelId, useJudge: useJudge) }
                 }
                 .buttonStyle(.borderedProminent).disabled(tester.running)
                 Button("Done") { dismiss() }
@@ -563,54 +569,91 @@ private struct ModelTestView: View {
             Divider()
 
             if tester.running {
-                let done = tester.rows.filter(\.done).count
-                ProgressView(value: Double(done), total: Double(tester.rows.count))
+                ProgressView(value: Double(tester.rows.filter(\.done).count), total: Double(tester.rows.count))
                     .padding(.horizontal, 16).padding(.top, 8)
             }
 
             ScrollView {
-                VStack(spacing: 8) {
-                    ForEach(tester.rows) { row in
-                        resultRow(row)
-                        Divider().overlay(PanelTheme.border)
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(ModelTester.Category.allCases) { cat in
+                        categoryHeader(cat)
+                        ForEach(tester.rows.filter { $0.category == cat }) { row in
+                            resultRow(row)
+                            Divider().overlay(PanelTheme.border)
+                        }
                     }
                 }
                 .padding(16)
             }
         }
-        .frame(width: 640, height: 560)
+        .frame(width: 680, height: 600)
         .background(PanelTheme.bg)
+    }
+
+    @ViewBuilder private var summary: some View {
+        if let overall = tester.overall {
+            HStack(spacing: 16) {
+                metric("Score", Int(overall * 100), suffix: "%", color: color(overall))
+                if let j = tester.overallJudge { metric("Apple", Int(j * 100), suffix: "%", color: .purple) }
+                if let ms = tester.averageMs { metric("Avg", ms, suffix: "ms", color: .secondary) }
+            }
+        }
+    }
+
+    private func metric(_ label: String, _ value: Int, suffix: String, color: Color) -> some View {
+        VStack(alignment: .trailing, spacing: 0) {
+            Text("\(value)\(suffix)").font(.title3.weight(.bold).monospacedDigit()).foregroundStyle(color)
+            Text(label).font(.caption2).foregroundStyle(.secondary)
+        }
+    }
+
+    private func categoryHeader(_ cat: ModelTester.Category) -> some View {
+        HStack {
+            Text(cat.rawValue).font(.subheadline.weight(.semibold))
+            Spacer()
+            if let a = tester.average(cat) {
+                Text("\(Int(a * 100))%").font(.caption.monospacedDigit()).foregroundStyle(color(a))
+            }
+            if let j = tester.averageJudge(cat) {
+                Text("· Apple \(Int(j * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.purple)
+            }
+        }
+        .padding(.top, 4)
     }
 
     private func resultRow(_ row: ModelTester.Row) -> some View {
         HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text(row.prompt).font(.caption.weight(.medium))
                 Text("expected: \(row.expected)").font(.caption2).foregroundStyle(.secondary)
-                if row.done {
-                    Text("got: \(row.received)").font(.caption2).foregroundStyle(color(row.score))
-                } else {
-                    Text("got: …").font(.caption2).foregroundStyle(.tertiary)
-                }
+                Text(row.done ? "got: \(row.received)" : "got: …")
+                    .font(.caption2).foregroundStyle(row.done ? color(row.score) : Color.secondary)
             }
             Spacer(minLength: 8)
             if row.done {
                 VStack(alignment: .trailing, spacing: 1) {
-                    Text("\(Int(row.score * 100))%")
-                        .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(color(row.score))
-                    Text(ModelTester.label(row.score)).font(.caption2).foregroundStyle(.secondary)
+                    HStack(spacing: 6) {
+                        if let j = row.judge {
+                            Text("\(Int(j * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.purple)
+                                .help("Apple Intelligence quality rating")
+                        }
+                        Text("\(Int(row.score * 100))%")
+                            .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(color(row.score))
+                    }
+                    Text("\(row.elapsedMs) ms").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
                 }
-                .frame(width: 60)
+                .frame(width: 96, alignment: .trailing)
             } else if tester.running {
-                ProgressView().controlSize(.small).frame(width: 60)
+                ProgressView().controlSize(.small).frame(width: 96)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func color(_ s: Double) -> Color {
-        if s >= 0.85 { return .green }
-        if s >= 0.70 { return .orange }
+        if s >= 0.9 { return .green }
+        if s >= 0.75 { return .green }
+        if s >= 0.55 { return .orange }
         return .red
     }
 }
