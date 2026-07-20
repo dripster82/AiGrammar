@@ -445,6 +445,7 @@ private struct ModelRow: View {
     let model: ModelInfo
     @ObservedObject var models: ModelManager
     @ObservedObject var settings: Settings
+    @State private var showTest = false
 
     private var isSelected: Bool { settings.rewriteEngineChoice == model.id }
 
@@ -467,6 +468,9 @@ private struct ModelRow: View {
         }
         .padding(.vertical, 4)
         .task { models.prefetchRemoteMetadata(for: model) }   // fetch size+quant without downloading
+        .sheet(isPresented: $showTest) {
+            ModelTestView(modelId: model.id, modelName: model.name, models: models)
+        }
     }
 
     private var subtitle: String { models.displayDetail(for: model) }
@@ -497,6 +501,7 @@ private struct ModelRow: View {
                             .buttonStyle(.borderedProminent).controlSize(.small)
                     }
                     Menu {
+                        Button("Test model…") { showTest = true }
                         Button("Remove", role: .destructive) {
                             if isSelected { settings.rewriteEngineChoice = "auto" }
                             models.delete(model)
@@ -511,6 +516,102 @@ private struct ModelRow: View {
                 }
             }
         }
+    }
+}
+
+// MARK: - Model test
+
+/// A sheet that benchmarks a model against fixed correction test cases, showing prompt / expected /
+/// received / rating per row plus an overall score.
+private struct ModelTestView: View {
+    let modelId: String
+    let modelName: String
+    @ObservedObject var models: ModelManager
+    @StateObject private var tester: ModelTester
+    @Environment(\.dismiss) private var dismiss
+
+    init(modelId: String, modelName: String, models: ModelManager) {
+        self.modelId = modelId
+        self.modelName = modelName
+        self.models = models
+        _tester = StateObject(wrappedValue: ModelTester(models: models))
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Test model").font(.headline)
+                    Text(modelName).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if let overall = tester.overall {
+                    VStack(alignment: .trailing, spacing: 0) {
+                        Text("\(Int(overall * 100))%")
+                            .font(.title2.weight(.bold)).foregroundStyle(color(overall))
+                        Text("Overall · \(ModelTester.label(overall))")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Button(tester.running ? "Running…" : "Run test") {
+                    Task { await tester.run(modelId: modelId) }
+                }
+                .buttonStyle(.borderedProminent).disabled(tester.running)
+                Button("Done") { dismiss() }
+            }
+            .padding(16)
+            Divider()
+
+            if tester.running {
+                let done = tester.rows.filter(\.done).count
+                ProgressView(value: Double(done), total: Double(tester.rows.count))
+                    .padding(.horizontal, 16).padding(.top, 8)
+            }
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    ForEach(tester.rows) { row in
+                        resultRow(row)
+                        Divider().overlay(PanelTheme.border)
+                    }
+                }
+                .padding(16)
+            }
+        }
+        .frame(width: 640, height: 560)
+        .background(PanelTheme.bg)
+    }
+
+    private func resultRow(_ row: ModelTester.Row) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(row.prompt).font(.caption.weight(.medium))
+                Text("expected: \(row.expected)").font(.caption2).foregroundStyle(.secondary)
+                if row.done {
+                    Text("got: \(row.received)").font(.caption2).foregroundStyle(color(row.score))
+                } else {
+                    Text("got: …").font(.caption2).foregroundStyle(.tertiary)
+                }
+            }
+            Spacer(minLength: 8)
+            if row.done {
+                VStack(alignment: .trailing, spacing: 1) {
+                    Text("\(Int(row.score * 100))%")
+                        .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(color(row.score))
+                    Text(ModelTester.label(row.score)).font(.caption2).foregroundStyle(.secondary)
+                }
+                .frame(width: 60)
+            } else if tester.running {
+                ProgressView().controlSize(.small).frame(width: 60)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func color(_ s: Double) -> Color {
+        if s >= 0.85 { return .green }
+        if s >= 0.70 { return .orange }
+        return .red
     }
 }
 
