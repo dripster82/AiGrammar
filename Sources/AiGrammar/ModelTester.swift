@@ -72,7 +72,8 @@ final class ModelTester: ObservableObject {
         return done.map(\.score).reduce(0, +) / Double(done.count)
     }
 
-    func run(modelId: String, modelName: String, useJudge: Bool) async {
+    /// `judgeModelId` = "apple", a local model id, or nil for no judging.
+    func run(modelId: String, modelName: String, judgeModelId: String?) async {
         guard !running else { return }
         running = true
         testedModelName = modelName
@@ -83,11 +84,12 @@ final class ModelTester: ObservableObject {
 
         // #1 — verify the model is up and responding before running the real tests.
         status = "Checking model responds…"
-        let warm = await complete("Reply with exactly: OK", system: "Reply with exactly the word: OK", modelId: modelId)
+        let warm = await complete("Reply with exactly: OK", system: "Reply with exactly the word: OK",
+                                  modelId: modelId, purpose: "test")
         if warm.hasPrefix("[") {
             status = "Model not responding: \(warm)"
             running = false
-            if modelId != "apple" { await LlamaServerPool.shared.release(purpose: "test") }
+            await LlamaServerPool.shared.release(purpose: "test")
             return
         }
         status = ""
@@ -98,17 +100,17 @@ final class ModelTester: ObservableObject {
             overall = s.isEmpty ? nil : s.reduce(0, +) / Double(s.count)
             let j = rows.compactMap(\.judge)
             overallJudge = j.isEmpty ? nil : j.reduce(0, +) / Double(j.count)
-            if modelId != "apple" { Task { await LlamaServerPool.shared.release(purpose: "test") } }
+            Task { await LlamaServerPool.shared.release(purpose: "test"); await LlamaServerPool.shared.release(purpose: "judge") }
         }
-        let judge = useJudge && Self.judgeAvailable
         for i in rows.indices {
             let start = Date()
-            let reply = await complete(rows[i].prompt, system: rows[i].category.systemPrompt, modelId: modelId)
+            let reply = await complete(rows[i].prompt, system: rows[i].category.systemPrompt,
+                                       modelId: modelId, purpose: "test")
             rows[i].elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
             rows[i].received = reply
             rows[i].score = Self.score(reply, row: rows[i])
-            if judge, !reply.hasPrefix("[") {
-                if let (s, reason) = await judgeQuality(row: rows[i]) {
+            if let jid = judgeModelId, !reply.hasPrefix("[") {
+                if let (s, reason) = await judgeQuality(row: rows[i], judgeModelId: jid) {
                     rows[i].judge = s; rows[i].judgeReason = reason
                 }
             }
@@ -116,19 +118,33 @@ final class ModelTester: ObservableObject {
         }
     }
 
-    /// Ask Apple's on-device model to rate 0–100 how well the reply did the task, WITH a reason. It's
-    /// given the reference answer for guidance (RESULT may differ but still be good).
-    private func judgeQuality(row: Row) async -> (Double, String)? {
+    /// Grade the reply with the chosen judge model. The prompt is deliberately harsh and
+    /// failure-focused: find what's WRONG first (especially the model answering the message instead
+    /// of editing it), then score. A brief note of the main problem is returned.
+    private func judgeQuality(row: Row, judgeModelId: String) async -> (Double, String)? {
         let system = """
-            You grade a text edit. TASK is what was asked. REFERENCE is one acceptable good answer \
-            (RESULT may be worded differently and still be correct). Score 0-100 for how well RESULT \
-            accomplishes the TASK while keeping the original meaning. Reply on ONE line exactly as:
-            SCORE: <number> | REASON: <one short sentence>
+            You are a harsh grader of ONE text edit. First find what is WRONG with RESULT, then score.
+            TASK is what the writer was asked to do. REFERENCE is one correct example — RESULT may be \
+            worded differently but must accomplish the TASK and keep the original meaning.
+
+            Deduct heavily for these failures:
+            - RESULT answers, replies to, or acts on the message instead of EDITING it → score 0-15.
+            - RESULT changes or loses the original meaning → score 0-30.
+            - RESULT does not actually do the TASK (not shorter, still casual/slang, still has errors) → 0-40.
+            - RESULT adds new information that wasn't in the original → deduct.
+            - Leftover spelling/grammar errors or awkward phrasing → deduct.
+            Only give 90-100 if RESULT fully does the TASK, keeps the meaning, and reads naturally.
+
+            Reply on ONE line exactly as:
+            PROBLEM: <the main problem, or "none"> | SCORE: <0-100>
             """
-        let user = "TASK: \(row.category.judgeTask)\nREFERENCE: \(row.expected)\nRESULT: \(row.received)"
-        let reply = await completeApple(user, system: system)
-        guard let n = firstNumber(after: "SCORE", in: reply) ?? firstNumber(in: reply) else { return nil }
-        let reason = textAfter("REASON:", in: reply) ?? reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        let user = "TASK: \(row.category.judgeTask)\nORIGINAL: \(row.prompt)\nREFERENCE: \(row.expected)\nRESULT: \(row.received)"
+        let reply = await complete(user, system: system, modelId: judgeModelId, purpose: "judge")
+        guard !reply.hasPrefix("["),
+              let n = firstNumber(after: "SCORE", in: reply) ?? firstNumber(in: reply) else { return nil }
+        let reason = textAfter("PROBLEM:", in: reply)?.components(separatedBy: "| SCORE").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? reply.trimmingCharacters(in: .whitespacesAndNewlines)
         return (min(1, max(0, n / 100)), reason)
     }
 
@@ -163,12 +179,12 @@ final class ModelTester: ObservableObject {
 
     // MARK: Model call
 
-    private func complete(_ prompt: String, system: String, modelId: String) async -> String {
+    private func complete(_ prompt: String, system: String, modelId: String, purpose: String) async -> String {
         if modelId == "apple" { return await completeApple(prompt, system: system) }
         guard let path = models.path(forID: modelId) else { return "[model not found]" }
         do {
             let port = try await LlamaServerPool.shared.ensureRunning(
-                purpose: "test", modelPath: path, reasoningOff: true)
+                purpose: purpose, modelPath: path, reasoningOff: true)
             var req = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/v1/chat/completions")!)
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -219,7 +235,7 @@ final class ModelTester: ObservableObject {
     /// CSV of the run for later analysis (opens cleanly in a spreadsheet).
     func exportCSV() -> String {
         func q(_ s: String) -> String { "\"\(s.replacingOccurrences(of: "\"", with: "\"\""))\"" }
-        var lines = ["Category,Prompt,Expected,Received,Score %,Apple %,Apple reason,Time ms"]
+        var lines = ["Category,Prompt,Expected,Received,Score %,Judge %,Judge notes,Time ms"]
         for r in rows {
             lines.append([
                 q(r.category.rawValue), q(r.prompt), q(r.expected), q(r.received),
@@ -232,7 +248,7 @@ final class ModelTester: ObservableObject {
         lines.append("")
         lines.append("Model,\(q(testedModelName))")
         lines.append("Overall score %,\(overall.map { String(Int($0 * 100)) } ?? "")")
-        lines.append("Overall Apple %,\(overallJudge.map { String(Int($0 * 100)) } ?? "")")
+        lines.append("Overall judge %,\(overallJudge.map { String(Int($0 * 100)) } ?? "")")
         lines.append("Avg response ms (excl. load),\(averageMs.map(String.init) ?? "")")
         return lines.joined(separator: "\n")
     }

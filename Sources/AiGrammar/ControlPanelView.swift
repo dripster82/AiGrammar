@@ -536,7 +536,7 @@ private struct ModelTestView: View {
     let modelName: String
     @ObservedObject var models: ModelManager
     @StateObject private var tester: ModelTester
-    @State private var useJudge = ModelTester.judgeAvailable
+    @State private var judgeModelId: String
     @State private var expanded: Set<UUID> = []
     @Environment(\.dismiss) private var dismiss
 
@@ -545,6 +545,7 @@ private struct ModelTestView: View {
         self.modelName = modelName
         self.models = models
         _tester = StateObject(wrappedValue: ModelTester(models: models))
+        _judgeModelId = State(initialValue: ModelTester.judgeAvailable ? "apple" : "")
     }
 
     var body: some View {
@@ -553,9 +554,13 @@ private struct ModelTestView: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Test model").font(.headline)
                     Text(modelName).font(.caption).foregroundStyle(.secondary)
-                    if ModelTester.judgeAvailable {
-                        Toggle("Rate quality with Apple Intelligence", isOn: $useJudge)
-                            .toggleStyle(.checkbox).font(.caption).disabled(tester.running)
+                    HStack(spacing: 6) {
+                        Text("Judge:").font(.caption).foregroundStyle(.secondary)
+                        Picker("", selection: $judgeModelId) {
+                            Text("No judge").tag("")
+                            if ModelTester.judgeAvailable { Text("Apple on-device").tag("apple") }
+                            ForEach(models.readyLocalModels) { Text($0.name).tag($0.id) }
+                        }.labelsHidden().fixedSize().controlSize(.small).disabled(tester.running)
                     }
                 }
                 Spacer()
@@ -564,7 +569,8 @@ private struct ModelTestView: View {
                     Button("Export…") { export() }
                 }
                 Button(tester.running ? "Running…" : "Run test") {
-                    Task { await tester.run(modelId: modelId, modelName: modelName, useJudge: useJudge) }
+                    Task { await tester.run(modelId: modelId, modelName: modelName,
+                                            judgeModelId: judgeModelId.isEmpty ? nil : judgeModelId) }
                 }
                 .buttonStyle(.borderedProminent).disabled(tester.running)
                 Button("Done") { dismiss() }
@@ -606,7 +612,7 @@ private struct ModelTestView: View {
         if let overall = tester.overall {
             HStack(spacing: 16) {
                 metric("Score", Int(overall * 100), suffix: "%", color: color(overall))
-                if let j = tester.overallJudge { metric("Apple", Int(j * 100), suffix: "%", color: .purple) }
+                if let j = tester.overallJudge { metric("Judge", Int(j * 100), suffix: "%", color: .purple) }
                 if let ms = tester.averageMs { metric("Avg", ms, suffix: "ms", color: .secondary) }
             }
         }
@@ -627,7 +633,7 @@ private struct ModelTestView: View {
                 Text("\(Int(a * 100))%").font(.caption.monospacedDigit()).foregroundStyle(color(a))
             }
             if let j = tester.averageJudge(cat) {
-                Text("· Apple \(Int(j * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.purple)
+                Text("· Judge \(Int(j * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.purple)
             }
         }
         .padding(.top, 4)
@@ -649,7 +655,7 @@ private struct ModelTestView: View {
                             HStack(spacing: 6) {
                                 if let j = row.judge {
                                     Text("\(Int(j * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.purple)
-                                        .help("Apple Intelligence quality rating")
+                                        .help("Judge quality rating")
                                 }
                                 Text("\(Int(row.score * 100))%")
                                     .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(color(row.score))
@@ -669,7 +675,7 @@ private struct ModelTestView: View {
                 }
             }
             if expanded.contains(row.id), let reason = row.judgeReason {
-                Text("Apple's reasoning: \(reason)")
+                Text("Judge: \(reason)")
                     .font(.caption2).foregroundStyle(.purple)
                     .padding(8).frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
