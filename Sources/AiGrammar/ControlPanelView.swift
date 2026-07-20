@@ -537,6 +537,7 @@ private struct ModelTestView: View {
     @ObservedObject var models: ModelManager
     @StateObject private var tester: ModelTester
     @State private var useJudge = ModelTester.judgeAvailable
+    @State private var expanded: Set<UUID> = []
     @Environment(\.dismiss) private var dismiss
 
     init(modelId: String, modelName: String, models: ModelManager) {
@@ -559,8 +560,11 @@ private struct ModelTestView: View {
                 }
                 Spacer()
                 summary
+                if tester.overall != nil && !tester.running {
+                    Button("Export…") { export() }
+                }
                 Button(tester.running ? "Running…" : "Run test") {
-                    Task { await tester.run(modelId: modelId, useJudge: useJudge) }
+                    Task { await tester.run(modelId: modelId, modelName: modelName, useJudge: useJudge) }
                 }
                 .buttonStyle(.borderedProminent).disabled(tester.running)
                 Button("Done") { dismiss() }
@@ -569,7 +573,15 @@ private struct ModelTestView: View {
             Divider()
 
             if tester.running {
-                ProgressView(value: Double(tester.rows.filter(\.done).count), total: Double(tester.rows.count))
+                VStack(spacing: 4) {
+                    if !tester.status.isEmpty {
+                        Text(tester.status).font(.caption).foregroundStyle(.secondary)
+                    }
+                    ProgressView(value: Double(tester.rows.filter(\.done).count), total: Double(tester.rows.count))
+                }
+                .padding(.horizontal, 16).padding(.top, 8)
+            } else if !tester.status.isEmpty {
+                Text(tester.status).font(.caption).foregroundStyle(.orange)
                     .padding(.horizontal, 16).padding(.top, 8)
             }
 
@@ -622,32 +634,61 @@ private struct ModelTestView: View {
     }
 
     private func resultRow(_ row: ModelTester.Row) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(row.prompt).font(.caption.weight(.medium))
-                Text("expected: \(row.expected)").font(.caption2).foregroundStyle(.secondary)
-                Text(row.done ? "got: \(row.received)" : "got: …")
-                    .font(.caption2).foregroundStyle(row.done ? color(row.score) : Color.secondary)
-            }
-            Spacer(minLength: 8)
-            if row.done {
-                VStack(alignment: .trailing, spacing: 1) {
-                    HStack(spacing: 6) {
-                        if let j = row.judge {
-                            Text("\(Int(j * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.purple)
-                                .help("Apple Intelligence quality rating")
-                        }
-                        Text("\(Int(row.score * 100))%")
-                            .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(color(row.score))
-                    }
-                    Text("\(row.elapsedMs) ms").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(row.prompt).font(.caption.weight(.medium))
+                    Text("expected: \(row.expected)").font(.caption2).foregroundStyle(.secondary)
+                    Text(row.done ? "got: \(row.received)" : "got: …")
+                        .font(.caption2).foregroundStyle(row.done ? color(row.score) : Color.secondary)
                 }
-                .frame(width: 96, alignment: .trailing)
-            } else if tester.running {
-                ProgressView().controlSize(.small).frame(width: 96)
+                Spacer(minLength: 8)
+                if row.done {
+                    HStack(spacing: 6) {
+                        VStack(alignment: .trailing, spacing: 1) {
+                            HStack(spacing: 6) {
+                                if let j = row.judge {
+                                    Text("\(Int(j * 100))%").font(.caption.monospacedDigit()).foregroundStyle(.purple)
+                                        .help("Apple Intelligence quality rating")
+                                }
+                                Text("\(Int(row.score * 100))%")
+                                    .font(.caption.monospacedDigit().weight(.semibold)).foregroundStyle(color(row.score))
+                            }
+                            Text("\(row.elapsedMs) ms").font(.caption2.monospacedDigit()).foregroundStyle(.tertiary)
+                        }
+                        if row.judgeReason != nil {
+                            Button { toggle(row.id) } label: {
+                                Image(systemName: expanded.contains(row.id) ? "chevron.up" : "chevron.down")
+                                    .font(.caption2)
+                            }.buttonStyle(.plain).foregroundStyle(.secondary)
+                        }
+                    }
+                    .frame(alignment: .trailing)
+                } else if tester.running {
+                    ProgressView().controlSize(.small).frame(width: 96)
+                }
+            }
+            if expanded.contains(row.id), let reason = row.judgeReason {
+                Text("Apple's reasoning: \(reason)")
+                    .font(.caption2).foregroundStyle(.purple)
+                    .padding(8).frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.purple.opacity(0.08), in: RoundedRectangle(cornerRadius: 6))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func toggle(_ id: UUID) {
+        if expanded.contains(id) { expanded.remove(id) } else { expanded.insert(id) }
+    }
+
+    private func export() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "AiGrammar-test-\(modelName).csv"
+        panel.canCreateDirectories = true
+        if panel.runModal() == .OK, let url = panel.url {
+            try? tester.exportCSV().data(using: .utf8)?.write(to: url)
+        }
     }
 
     private func color(_ s: Double) -> Color {

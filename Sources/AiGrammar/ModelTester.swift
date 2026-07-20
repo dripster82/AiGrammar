@@ -44,14 +44,17 @@ final class ModelTester: ObservableObject {
         var received = ""
         var score = 0.0          // heuristic 0…1
         var judge: Double?       // Apple-Intelligence quality rating 0…1 (if enabled)
+        var judgeReason: String? // why Apple gave that rating
         var elapsedMs = 0
         var done = false
     }
 
     @Published private(set) var rows: [Row]
     @Published private(set) var running = false
+    @Published private(set) var status = ""          // warmup / error message
     @Published private(set) var overall: Double?
     @Published private(set) var overallJudge: Double?
+    private(set) var testedModelName = ""
 
     /// The AI judge (rate each reply with Apple's on-device model) is only offered when available.
     static var judgeAvailable: Bool { RewriteEngineChoice.appleAvailable() }
@@ -69,14 +72,29 @@ final class ModelTester: ObservableObject {
         return done.map(\.score).reduce(0, +) / Double(done.count)
     }
 
-    func run(modelId: String, useJudge: Bool) async {
+    func run(modelId: String, modelName: String, useJudge: Bool) async {
         guard !running else { return }
         running = true
+        testedModelName = modelName
         overall = nil; overallJudge = nil
-        for i in rows.indices { rows[i].received = ""; rows[i].score = 0; rows[i].judge = nil; rows[i].done = false }
+        for i in rows.indices {
+            rows[i].received = ""; rows[i].score = 0; rows[i].judge = nil; rows[i].judgeReason = nil; rows[i].done = false
+        }
+
+        // #1 — verify the model is up and responding before running the real tests.
+        status = "Checking model responds…"
+        let warm = await complete("Reply with exactly: OK", system: "Reply with exactly the word: OK", modelId: modelId)
+        if warm.hasPrefix("[") {
+            status = "Model not responding: \(warm)"
+            running = false
+            if modelId != "apple" { await LlamaServerPool.shared.release(purpose: "test") }
+            return
+        }
+        status = ""
+
         defer {
             running = false
-            let s = rows.map(\.score)
+            let s = rows.filter(\.done).map(\.score)
             overall = s.isEmpty ? nil : s.reduce(0, +) / Double(s.count)
             let j = rows.compactMap(\.judge)
             overallJudge = j.isEmpty ? nil : j.reduce(0, +) / Double(j.count)
@@ -89,20 +107,43 @@ final class ModelTester: ObservableObject {
             rows[i].elapsedMs = Int(Date().timeIntervalSince(start) * 1000)
             rows[i].received = reply
             rows[i].score = Self.score(reply, row: rows[i])
-            if judge, !reply.hasPrefix("[") { rows[i].judge = await judgeQuality(row: rows[i]) }
+            if judge, !reply.hasPrefix("[") {
+                if let (s, reason) = await judgeQuality(row: rows[i]) {
+                    rows[i].judge = s; rows[i].judgeReason = reason
+                }
+            }
             rows[i].done = true
         }
     }
 
-    /// Ask Apple's on-device model to rate 0–100 how well the reply did the task. Separate from the
-    /// heuristic score — an independent quality opinion.
-    private func judgeQuality(row: Row) async -> Double? {
-        let system = "You are a strict evaluator of text edits. Score from 0 to 100 how well the RESULT performs the requested task on the ORIGINAL, preserving meaning and being correct. Reply with ONLY the number."
-        let user = "TASK: \(row.category.judgeTask)\nORIGINAL: \(row.prompt)\nRESULT: \(row.received)"
+    /// Ask Apple's on-device model to rate 0–100 how well the reply did the task, WITH a reason. It's
+    /// given the reference answer for guidance (RESULT may differ but still be good).
+    private func judgeQuality(row: Row) async -> (Double, String)? {
+        let system = """
+            You grade a text edit. TASK is what was asked. REFERENCE is one acceptable good answer \
+            (RESULT may be worded differently and still be correct). Score 0-100 for how well RESULT \
+            accomplishes the TASK while keeping the original meaning. Reply on ONE line exactly as:
+            SCORE: <number> | REASON: <one short sentence>
+            """
+        let user = "TASK: \(row.category.judgeTask)\nREFERENCE: \(row.expected)\nRESULT: \(row.received)"
         let reply = await completeApple(user, system: system)
-        guard let n = Double(reply.components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted)
-            .first(where: { !$0.isEmpty }) ?? "") else { return nil }
-        return min(1, max(0, n / 100))
+        guard let n = firstNumber(after: "SCORE", in: reply) ?? firstNumber(in: reply) else { return nil }
+        let reason = textAfter("REASON:", in: reply) ?? reply.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (min(1, max(0, n / 100)), reason)
+    }
+
+    private func firstNumber(after key: String, in s: String) -> Double? {
+        guard let r = s.range(of: key) else { return nil }
+        return firstNumber(in: String(s[r.upperBound...]))
+    }
+    private func firstNumber(in s: String) -> Double? {
+        let parts = s.components(separatedBy: CharacterSet(charactersIn: "0123456789.").inverted)
+        return parts.first(where: { !$0.isEmpty }).flatMap(Double.init)
+    }
+    private func textAfter(_ key: String, in s: String) -> String? {
+        guard let r = s.range(of: key) else { return nil }
+        let t = String(s[r.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return t.isEmpty ? nil : t
     }
 
     /// Average judge rating for a category (rated rows only).
@@ -173,6 +214,27 @@ final class ModelTester: ObservableObject {
         case .shorter:      return 0.5 * brevity(clean, vs: row.prompt, lenient: false) + 0.5 * overlap(clean, row.expected)
         case .professional: return 0.6 * casualRemoval(clean, from: row.prompt) + 0.4 * similarity(clean, row.expected)
         }
+    }
+
+    /// CSV of the run for later analysis (opens cleanly in a spreadsheet).
+    func exportCSV() -> String {
+        func q(_ s: String) -> String { "\"\(s.replacingOccurrences(of: "\"", with: "\"\""))\"" }
+        var lines = ["Category,Prompt,Expected,Received,Score %,Apple %,Apple reason,Time ms"]
+        for r in rows {
+            lines.append([
+                q(r.category.rawValue), q(r.prompt), q(r.expected), q(r.received),
+                String(Int(r.score * 100)),
+                r.judge.map { String(Int($0 * 100)) } ?? "",
+                q(r.judgeReason ?? ""),
+                String(r.elapsedMs),
+            ].joined(separator: ","))
+        }
+        lines.append("")
+        lines.append("Model,\(q(testedModelName))")
+        lines.append("Overall score %,\(overall.map { String(Int($0 * 100)) } ?? "")")
+        lines.append("Overall Apple %,\(overallJudge.map { String(Int($0 * 100)) } ?? "")")
+        lines.append("Avg response ms (excl. load),\(averageMs.map(String.init) ?? "")")
+        return lines.joined(separator: "\n")
     }
 
     static func label(_ score: Double) -> String {
