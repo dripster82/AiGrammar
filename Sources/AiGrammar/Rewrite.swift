@@ -126,16 +126,14 @@ final class RewriteController {
             Log.write("rewrite apply skipped: range out of bounds (text changed)")
             return
         }
-        let updated = ns.replacingCharacters(in: range, with: newText)
-        guard AX.setValue(element, updated) == .success else {
-            Log.write("rewrite apply failed: setValue rejected")
-            return
-        }
+        // Shared writer: targeted select-and-replace when possible (so rewriting a selection inside a
+        // formatted document doesn't flatten the rest), whole-text setValue fallback for plain fields.
         let caret = range.location + (newText as NSString).length
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            _ = AX.setSelectedRange(element, location: caret, length: 0)
+        if AXWrite.replace(element, range: range, with: newText, currentText: current, caret: caret) {
+            Log.write("rewrite applied: \(newText.count) chars")
+        } else {
+            Log.write("rewrite apply failed: no usable write path")
         }
-        Log.write("rewrite applied: \(newText.count) chars")
     }
 
     private func selectionBounds(element: AXUIElement, range: CFRange) -> CGRect? {

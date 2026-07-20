@@ -507,45 +507,21 @@ final class ComposerPipeline {
         Log.write("undo: \"\(correction.corrected)\" → \"\(correction.original)\" (now ignored)")
     }
 
-    /// Replace a character range. Prefer whole-text `setValue` — the proven path that works in Slack,
-    /// browsers, and native fields. (Slack's Quill reports `AXSelectedText` as settable but silently
-    /// ignores targeted writes, so we can't trust that flag.) Only fields that truly can't `setValue`
-    /// fall back to a targeted `setSelectedText`.
+    /// Replace a character range via the shared writer (targeted select-and-replace to preserve rich
+    /// formatting, whole-text `setValue` fallback for plain fields). Keeps the user's caret where it
+    /// is, shifted by the edit's length change — corrections happen behind the cursor while typing.
     @discardableResult
     private func replace(range: NSRange, with replacement: String,
                          in element: AXUIElement, currentText: String) -> Bool {
         let ns = currentText as NSString
         guard range.location + range.length <= ns.length else { return false }
-        // Keep the user's caret where it is, shifted by the length change — don't yank it to the word.
         let priorCaret = AX.range(element, kAXSelectedTextRangeAttribute as String)?.location
         let repLen = (replacement as NSString).length
         let caret = adjustedCaret(prior: priorCaret, range: range, repLen: repLen,
                                   newLength: ns.length - range.length + repLen)
         suppress()
-
-        if AX.isSettable(element, kAXValueAttribute as String) {
-            // Whole-text write (Slack / browser / native fields). Quill applies it asynchronously.
-            let newText = ns.replacingCharacters(in: range, with: replacement)
-            guard AX.setValue(element, newText) == .success else {
-                Log.write("replace failed: setValue rejected")
-                return false
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
-                if AX.string(element, kAXValueAttribute as String) == newText {
-                    _ = AX.setSelectedRange(element, location: caret, length: 0)
-                }
-            }
-            return true
-        }
-
-        // Fallback: targeted edit for fields that expose only AXSelectedText (e.g. some NSTextViews).
-        _ = AX.setSelectedRange(element, location: range.location, length: range.length)
-        guard AX.setSelectedText(element, replacement) == .success else {
-            Log.write("replace failed: neither setValue nor setSelectedText available")
-            return false
-        }
-        _ = AX.setSelectedRange(element, location: caret, length: 0)
-        return true
+        return AXWrite.replace(element, range: range, with: replacement,
+                               currentText: currentText, caret: caret)
     }
 
     /// Keep the user's caret at its position, shifted by the edit's length change.
